@@ -69,6 +69,7 @@ function ns.InitListWindow(addon)
 
   local function setView(view)
     addon.db.profile.window.view = view
+    addon:MarkDirty("display")
     ns.RefreshListWindow(addon)
   end
 
@@ -83,8 +84,23 @@ function ns.InitListWindow(addon)
   f.Alts:SetChecked(addon.db.profile.includeAlts)
   f.Alts:SetScript("OnClick", function(self)
     addon.db.profile.includeAlts = self:GetChecked() and true or false
-    addon:MarkDirty("full")
+
+    -- If a refresh is already pending, cancel it so the toggle always takes effect immediately.
+    if addon.refreshTimer then
+      addon:CancelTimer(addon.refreshTimer)
+      addon.refreshTimer = nil
+    end
+
+      addon:MarkDirty("full")
+
+    -- Apply immediately so the list never "blanks until reload"
+    if addon.inCombat then
+      addon.repaintAfterCombat = true
+    else
+      addon:RecomputeAndRefresh()
+    end
   end)
+
 
   -- Reagent sort buttons: N R E S
   f.SortBar = CreateFrame("Frame", nil, f)
@@ -97,11 +113,12 @@ function ns.InitListWindow(addon)
     b:SetPoint("LEFT", f.SortBar, "LEFT", x, 0)
     b:SetText(letter)
     b.letter = letter
-	b:SetScript("OnClick", function()
-	  addon.db.profile.window.reagentSort = letter
-	  addon:MarkDirty("display")
-	end)
-    return b
+  b:SetScript("OnClick", function()
+    addon.db.profile.window.reagentSort = letter
+    addon:MarkDirty("display")
+  end)
+
+  return b
   end
 
   f.SortN = makeSortBtn("N", 0)

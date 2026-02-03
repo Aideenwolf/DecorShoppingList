@@ -500,43 +500,6 @@ end
 function ns.GetHaveCount(addon, itemID)
   if not (addon and addon.db and itemID) then return 0 end
 
-  local realm, key = playerKey()
-  local realms = addon.db.global and addon.db.global.realms
-  local realmData = realms and realms[realm]
-  local chars = realmData and realmData.chars
-  if not chars then return 0 end
-
-  local function countEntry(entry)
-    if type(entry) ~= "table" then return 0 end
-    local bags = entry.bags or {}
-    local bank = entry.bank or {}
-    return (bags[itemID] or 0) + (bank[itemID] or 0)
-  end
-
-local includeAlts = addon.db.profile and addon.db.profile.includeAlts
-  if includeAlts then
-    -- Prefer pre-summed alt totals when available (built by BuildAltItemSums).
-    local sums = addon.cache and addon.cache.altItemSums
-    if sums and sums[itemID] then
-      return sums[itemID]
-    end
-
-    local total = 0
-    for _, entry in pairs(chars) do
-      total = total + countEntry(entry)
-    end
-    return total
-  end
-
-  return countEntry(chars[key])
-end
-
--- Return "have" count for an item.
--- If includeAlts is true: sum across all known characters on this realm (bags + stored bank).
--- If includeAlts is false: only current character (bags + stored bank).
-function ns.GetHaveCount(addon, itemID)
-  if not (addon and addon.db and itemID) then return 0 end
-
   -- Provide method-style access too (addon:GetHaveCount(itemID))
   if addon.GetHaveCount == nil then
     addon.GetHaveCount = function(self, id)
@@ -831,17 +794,24 @@ local function BuildReagentsDisplayOnly(addon)
     local sb = sourceOrder[b.source or "Other"] or 99
     if sa ~= sb then return sa < sb end
 
-    if (a.source == "Gathering") and (b.source == "Gathering") then
-      local subOrder = {
-        Herbalism = 1,
-        Mining = 2,
-        Skinning = 3,
-        Fishing = 4,
-        Lumbering = 5,
-      }
-      local aSub = subOrder[a.subSource or ""] or 99
-      local bSub = subOrder[b.subSource or ""] or 99
-      if aSub ~= bSub then return aSub < bSub end
+    local function subRank(src, sub)
+      if src == "Gathering" then
+        local subOrder = { Herbalism = 1, Mining = 2, Skinning = 3, Fishing = 4, Lumbering = 5 }
+        return subOrder[sub or ""] or 99
+      elseif src == "Crafting" then
+        local subOrder = {
+          Alchemy = 1, Blacksmithing = 2, Enchanting = 3, Engineering = 4, Inscription = 5,
+          Jewelcrafting = 6, Leatherworking = 7, Tailoring = 8, Cooking = 9,
+        }
+        return subOrder[sub or ""] or 99
+      end
+      return 99
+    end
+
+    if (a.source == b.source) and ((a.source == "Gathering") or (a.source == "Crafting")) then
+      local ra = subRank(a.source, a.subSource)
+      local rb = subRank(b.source, b.subSource)
+      if ra ~= rb then return ra < rb end
     end
 
     local ar, br = rarityKey(a), rarityKey(b)
@@ -869,21 +839,28 @@ local function BuildReagentsDisplayOnly(addon)
     local display = {}
 
     local byGather = {}
-    local crafting, vendor, other = {}, {}, {}
+    local byCraft = {}
+    local vendor, other = {}, {}
 
     for _, e in ipairs(flat) do
       if e.source == "Gathering" then
         local sub = e.subSource or "Other"
         byGather[sub] = byGather[sub] or {}
         table.insert(byGather[sub], e)
+
       elseif e.source == "Crafting" then
-        table.insert(crafting, e)
+        local sub = e.subSource or "Other"
+        byCraft[sub] = byCraft[sub] or {}
+        table.insert(byCraft[sub], e)
+
       elseif e.source == "Vendor" then
         table.insert(vendor, e)
+
       else
         table.insert(other, e)
       end
     end
+
 
     -- Source: Gathering (structured + collapsible)
     if next(byGather) then
@@ -908,17 +885,33 @@ local function BuildReagentsDisplayOnly(addon)
       end
     end
 
-    -- Source: Crafting
-    if #crafting > 0 then
-      local cKey = "SRC:CRAFTING"
-      table.insert(display, { isHeader = true, name = "Crafting", groupKey = cKey, profession = cKey, level = 0 })
-      if not collapsed[cKey] then
-        for _, e in ipairs(crafting) do
-          e.level = 1
-          table.insert(display, e)
+      -- Source: Crafting (parent + subgroups)
+      if next(byCraft) then
+        local cKey = "SRC:CRAFTING"
+        table.insert(display, { isHeader = true, name = "Crafting", groupKey = cKey, profession = cKey, level = 0 })
+
+        if not collapsed[cKey] then
+          local subOrder = {
+            "Alchemy","Blacksmithing","Enchanting","Engineering","Inscription","Jewelcrafting",
+            "Leatherworking","Tailoring","Cooking","Other"
+          }
+
+          for _, sub in ipairs(subOrder) do
+            local list = byCraft[sub]
+            if list and #list > 0 then
+              local subKey = cKey .. ":" .. sub
+              table.insert(display, { isHeader = true, name = sub, groupKey = subKey, profession = subKey, parentKey = cKey, level = 1 })
+
+              if not collapsed[subKey] then
+                for _, e in ipairs(list) do
+                  e.level = 2
+                  table.insert(display, e)
+                end
+              end
+            end
+          end
         end
       end
-    end
 
     -- Source: Vendor
     if #vendor > 0 then
@@ -1144,25 +1137,173 @@ function ns.RecomputeDisplayOnly(addon)
 
   if mode == "N" then
     table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortN) end)
-    addon.cache.reagentsDisplay = flat
     addon.cache.reagentsList = flat
-    return
-  elseif mode == "R" then
-    table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortR) end)
     addon.cache.reagentsDisplay = flat
-    addon.cache.reagentsList = flat
-    return
-  elseif mode == "S" then
-    table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortSInner) end)
-    addon.cache.reagentsDisplay = flat
-    addon.cache.reagentsList = flat
-    return
-  else
-    table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortEInner) end)
-    addon.cache.reagentsDisplay = flat
-    addon.cache.reagentsList = flat
     return
   end
+
+  if mode == "R" then
+    table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortR) end)
+    addon.cache.reagentsList = flat
+    addon.cache.reagentsDisplay = flat
+    return
+  end
+
+  if mode == "S" then
+    table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortSInner) end)
+
+    local display = {}
+    local byGather = {}
+    local byCraft = {}
+    local vendor, other = {}, {}
+
+    for _, e in ipairs(flat) do
+      if e.source == "Gathering" then
+        local sub = e.subSource or "Other"
+        byGather[sub] = byGather[sub] or {}
+        table.insert(byGather[sub], e)
+
+      elseif e.source == "Crafting" then
+        local sub = e.subSource or "Other"
+        byCraft[sub] = byCraft[sub] or {}
+        table.insert(byCraft[sub], e)
+
+      elseif e.source == "Vendor" then
+        table.insert(vendor, e)
+
+      else
+        table.insert(other, e)
+      end
+    end
+
+    -- Gathering (parent + subgroups)
+    if next(byGather) then
+      local gKey = "SRC:GATHER"
+      table.insert(display, { isHeader = true, name = "Gathering", groupKey = gKey, profession = gKey, level = 0 })
+
+      if not collapsed[gKey] then
+        local subOrder = { "Herbalism", "Mining", "Skinning", "Fishing", "Lumbering", "Other" }
+        for _, sub in ipairs(subOrder) do
+          local list = byGather[sub]
+          if list and #list > 0 then
+            local subKey = gKey .. ":" .. sub
+            table.insert(display, { isHeader = true, name = sub, groupKey = subKey, profession = subKey, parentKey = gKey, level = 1 })
+
+            if not collapsed[subKey] then
+              for _, r in ipairs(list) do
+                r.level = 2
+                table.insert(display, r)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    -- Crafting (parent + subgroups)
+    if next(byCraft) then
+      local cKey = "SRC:CRAFTING"
+      table.insert(display, { isHeader = true, name = "Crafting", groupKey = cKey, profession = cKey, level = 0 })
+
+      if not collapsed[cKey] then
+        local subOrder = {
+          "Alchemy","Blacksmithing","Enchanting","Engineering","Inscription","Jewelcrafting",
+          "Leatherworking","Tailoring","Cooking","Other"
+        }
+
+        for _, sub in ipairs(subOrder) do
+          local list = byCraft[sub]
+          if list and #list > 0 then
+            local subKey = cKey .. ":" .. sub
+            table.insert(display, { isHeader = true, name = sub, groupKey = subKey, profession = subKey, parentKey = cKey, level = 1 })
+
+            if not collapsed[subKey] then
+              for _, r in ipairs(list) do
+                r.level = 2
+                table.insert(display, r)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    -- Vendor
+    if #vendor > 0 then
+      local vKey = "SRC:VENDOR"
+      table.insert(display, { isHeader = true, name = "Vendor", groupKey = vKey, profession = vKey, level = 0 })
+      if not collapsed[vKey] then
+        for _, r in ipairs(vendor) do
+          r.level = 1
+          table.insert(display, r)
+        end
+      end
+    end
+
+    -- Other
+    if #other > 0 then
+      local oKey = "SRC:OTHER"
+      table.insert(display, { isHeader = true, name = "Other", groupKey = oKey, profession = oKey, level = 0 })
+      if not collapsed[oKey] then
+        for _, r in ipairs(other) do
+          r.level = 1
+          table.insert(display, r)
+        end
+      end
+    end
+
+    addon.cache.reagentsList = flat
+    addon.cache.reagentsDisplay = display
+    return
+  end
+
+  -- "E" default
+  table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortEInner) end)
+
+  local display = {}
+  local byExpac = {}
+  local expacOrder = {}
+
+  for _, e in ipairs(flat) do
+    local id = e.expacID
+    if id == nil then
+      id = -1
+      e.expacID = id
+      e.expacName = "Unknown"
+    end
+
+    if byExpac[id] == nil then
+      byExpac[id] = {}
+      table.insert(expacOrder, id)
+    end
+    table.insert(byExpac[id], e)
+  end
+
+  table.sort(expacOrder, function(a, b)
+    a = a or -1
+    b = b or -1
+    return a > b
+  end)
+
+  for _, id in ipairs(expacOrder) do
+    local list = byExpac[id]
+    if list and #list > 0 then
+      local headerName = GetExpansionName(id)
+      local key = "EXPAC:" .. tostring(id)
+      table.insert(display, { isHeader = true, name = headerName, profession = key, groupKey = key, level = 0 })
+
+      if not collapsed[key] then
+        for _, r in ipairs(list) do
+          r.level = 1
+          table.insert(display, r)
+        end
+      end
+    end
+  end
+
+  addon.cache.reagentsList = flat
+  addon.cache.reagentsDisplay = display
+  return
 end
 
 function ns.RecomputeCaches(addon)
@@ -1790,308 +1931,6 @@ function ns.RecomputeCaches(addon)
     return
   end
 end
-
-
-  local function nameKey(x) return (x.rawName or ""):lower() end
-  local function rarityKey(x) return (x.rarity or -1) end
-
-  local function completeAwareCompare(a, b, innerCompare)
-    if a.isComplete ~= b.isComplete then
-      return (a.isComplete == false)
-    end
-    if a.isComplete and b.isComplete then
-      return nameKey(a) < nameKey(b)
-    end
-    return innerCompare(a, b)
-  end
-
-  local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"
-
-  -- Compute a cheap signature for reagent ordering.
-  -- Order depends on: sort mode, list membership, and completion split (complete vs incomplete).
-  local incompleteCount = 0
-  for _, e in ipairs(flat) do
-    if not e.isComplete then
-      incompleteCount = incompleteCount + 1
-    end
-  end
-
-  local sortSig = table.concat({ mode, tostring(#flat), tostring(incompleteCount) }, "|")
-
-  -- Try to reuse prior ordering to avoid table.sort cost.
-  local rCache = addon.cache._sortCache.reagents
-  if rCache.mode == mode and rCache.sig == sortSig and rCache.order and #rCache.order == #flat then
-    local map = {}
-    for _, e in ipairs(flat) do
-      map[e.itemID] = e
-    end
-
-    local ordered = {}
-    local ok = true
-    for _, id in ipairs(rCache.order) do
-      local e = map[id]
-      if not e then ok = false break end
-      table.insert(ordered, e)
-    end
-
-    if ok and #ordered == #flat then
-      flat = ordered
-      rCache.reused = true
-    else
-      rCache.reused = false
-    end
-  else
-    rCache.reused = false
-  end
-
-  local function sortN(a, b)
-    return nameKey(a) < nameKey(b)
-  end
-
-  local function sortR(a, b)
-    local ar, br = rarityKey(a), rarityKey(b)
-    if ar ~= br then return ar > br end
-    return nameKey(a) < nameKey(b)
-  end
-
-  local function sortEInner(a, b)
-    local ae, be = (a.expacID or -1), (b.expacID or -1)
-    if ae ~= be then return ae > be end
-    local ar, br = rarityKey(a), rarityKey(b)
-    if ar ~= br then return ar > br end
-    return nameKey(a) < nameKey(b)
-  end
-
-  local function sortSInner(a, b)
-    local sourceOrder = { Gathering = 1, Crafting = 2, Vendor = 3, Other = 4 }
-    local sa = sourceOrder[a.source or "Other"] or 99
-    local sb = sourceOrder[b.source or "Other"] or 99
-    if sa ~= sb then return sa < sb end
-
-    if (a.source == "Gathering") and (b.source == "Gathering") then
-      local subOrder = {
-        Herbalism = 1,
-        Mining = 2,
-        Skinning = 3,
-        Fishing = 4,
-        Lumbering = 5,
-      }
-      local aSub = subOrder[a.subSource or ""] or 99
-      local bSub = subOrder[b.subSource or ""] or 99
-      if aSub ~= bSub then return aSub < bSub end
-    end
-
-    local ar, br = rarityKey(a), rarityKey(b)
-    if ar ~= br then return ar > br end
-    return nameKey(a) < nameKey(b)
-  end
-
-  if mode == "N" then
-    if not addon.cache._sortCache.reagents.reused then
-      table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortN) end)
-    end
-  
-    local order = {}
-    for _, e in ipairs(flat) do table.insert(order, e.itemID) end
-    addon.cache._sortCache.reagents.mode = mode
-    addon.cache._sortCache.reagents.sig = sortSig
-    addon.cache._sortCache.reagents.order = order
-
-    addon.cache.reagentsList = flat
-    addon.cache.reagentsDisplay = flat
-
-  elseif mode == "R" then
-    if not addon.cache._sortCache.reagents.reused then
-      table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortR) end)
-    end
-
-    local order = {}
-    for _, e in ipairs(flat) do table.insert(order, e.itemID) end
-    addon.cache._sortCache.reagents.mode = mode
-    addon.cache._sortCache.reagents.sig = sortSig
-    addon.cache._sortCache.reagents.order = order
-
-    addon.cache.reagentsList = flat
-    addon.cache.reagentsDisplay = flat
-
-  elseif mode == "S" then
-    if not addon.cache._sortCache.reagents.reused then
-      table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortSInner) end)
-    end
-
-    local order = {}
-    for _, e in ipairs(flat) do table.insert(order, e.itemID) end
-    addon.cache._sortCache.reagents.mode = mode
-    addon.cache._sortCache.reagents.sig = sortSig
-    addon.cache._sortCache.reagents.order = order
-
-    local display = {}
-
-    local byGather = {}
-    local crafting, vendor, other = {}, {}, {}
-
-    for _, e in ipairs(flat) do
-      if e.source == "Gathering" then
-        local sub = e.subSource or "Other"
-        byGather[sub] = byGather[sub] or {}
-        table.insert(byGather[sub], e)
-      elseif e.source == "Crafting" then
-        table.insert(crafting, e)
-      elseif e.source == "Vendor" then
-        table.insert(vendor, e)
-      else
-        table.insert(other, e)
-      end
-    end
-
-    local function AddHeader(name, key, level, parentKey)
-      table.insert(display, {
-        isHeader = true,
-        name = name,
-        profession = key,   -- keeps compatibility if ListWindow collapses by profession
-        groupKey = key,     -- preferred key
-        parentKey = parentKey,
-        level = level or 1,
-      })
-    end
-
-	-- Source: Gathering (structured + collapsible)
-	if next(byGather) then
-	  local gKey = "SRC:GATHER"
-
-		table.insert(display, {
-		  isHeader = true,
-		  name = "Gathering",
-		  groupKey = gKey,
-		  profession = gKey,
-		  level = 0,
-		})
-	  if not collapsed[gKey] then
-		local subOrder = { "Herbalism", "Mining", "Skinning", "Fishing", "Lumbering" }
-
-		for _, sub in ipairs(subOrder) do
-		  local list = byGather[sub]
-		  if list and #list > 0 then
-			local subKey = gKey .. ":" .. sub
-
-				table.insert(display, {
-				  isHeader = true,
-				  name = sub,
-				  groupKey = subKey,
-				  profession = subKey,
-				  parentKey = gKey,
-				  level = 1,
-				})
-
-			if not collapsed[subKey] then
-			  for _, e in ipairs(list) do
-				e.level = 2
-				table.insert(display, e)
-			  end
-			end
-		  end
-		end
-	  end
-	end
-	
-    -- Source: Crafting
-	if #crafting > 0 then
-	  local cKey = "SRC:CRAFTING"
-	  table.insert(display, { isHeader = true, name = "Crafting", groupKey = cKey, profession = cKey, level = 0 })
-
-	  if not collapsed[cKey] then
-		for _, e in ipairs(crafting) do
-		  e.level = 1
-		  table.insert(display, e)
-		end
-	  end
-	end
-
-    -- Source: Vendor
-	if #vendor > 0 then
-	  local vKey = "SRC:VENDOR"
-	  table.insert(display, { isHeader = true, name = "Vendor", groupKey = vKey, profession = vKey, level = 0 })
-
-	  if not collapsed[vKey] then
-		for _, e in ipairs(vendor) do
-		  e.level = 1
-		  table.insert(display, e)
-		end
-	  end
-	end
-
-    -- Source: Other
-	if #other > 0 then
-	  local oKey = "SRC:OTHER"
-	  table.insert(display, { isHeader = true, name = "Other", groupKey = oKey, profession = oKey, level = 0 })
-
-	  if not collapsed[oKey] then
-		for _, e in ipairs(other) do
-		  e.level = 1
-		  table.insert(display, e)
-		end
-	  end
-	end
-
-    addon.cache.reagentsList = flat
-    addon.cache.reagentsDisplay = display
-
-    else
-    -- "E" default
-    if not addon.cache._sortCache.reagents.reused then
-      table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortEInner) end)
-    end
-
-    local order = {}
-    for _, e in ipairs(flat) do table.insert(order, e.itemID) end
-    addon.cache._sortCache.reagents.mode = mode
-    addon.cache._sortCache.reagents.sig = sortSig
-    addon.cache._sortCache.reagents.order = order
-
-    local display = {}
-    local byExpac = {}
-    local expacOrder = {}
-
-	for _, e in ipairs(flat) do
-	  local id = e.expacID
-	  if id == nil then
-		id = -1
-		e.expacID = id
-		e.expacName = "Unknown"
-	  end
-
-	  if byExpac[id] == nil then
-		byExpac[id] = {}
-		table.insert(expacOrder, id)
-	  end
-	  table.insert(byExpac[id], e)
-	end
-
-    table.sort(expacOrder, function(a, b)
-      a = a or -1
-      b = b or -1
-      return a > b
-    end)
-
-    for _, id in ipairs(expacOrder) do
-      local list = byExpac[id]
-      if list and #list > 0 then
-        local headerName = GetExpansionName(id)
-        local key = "EXPAC:" .. tostring(id)
-        table.insert(display, { isHeader = true, name = headerName, profession = key, groupKey = key, level = 0 })
-
-        if not collapsed[key] then
-          for _, e in ipairs(list) do
-		    e.level = 1
-            table.insert(display, e)
-          end
-        end
-      end
-    end
-
-    addon.cache.reagentsList = flat
-    addon.cache.reagentsDisplay = display
-  end
 
 function ns.BuildAltItemSums(addon)
   if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return end

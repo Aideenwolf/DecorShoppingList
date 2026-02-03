@@ -83,24 +83,23 @@ function ns.InitListWindow(addon)
   f.Alts.text:SetText(L["INCLUDE_ALTS"])
   f.Alts:SetChecked(addon.db.profile.includeAlts)
   f.Alts:SetScript("OnClick", function(self)
-    addon.db.profile.includeAlts = self:GetChecked() and true or false
+      addon.db.profile.includeAlts = self:GetChecked() and true or false
 
-    -- If a refresh is already pending, cancel it so the toggle always takes effect immediately.
-    if addon.refreshTimer then
-      addon:CancelTimer(addon.refreshTimer)
-      addon.refreshTimer = nil
-    end
+      -- If a refresh is already pending, cancel it so the toggle always takes effect immediately.
+      if addon.refreshTimer then
+        addon:CancelTimer(addon.refreshTimer)
+        addon.refreshTimer = nil
+      end
 
+      -- Mark + apply immediately (or defer until combat ends)
       addon:MarkDirty("full")
-
-    -- Apply immediately so the list never "blanks until reload"
-    if addon.inCombat then
-      addon.repaintAfterCombat = true
-    else
-      addon:RecomputeAndRefresh()
-    end
-  end)
-
+      if addon.inCombat then
+        addon.repaintAfterCombat = true
+      else
+        ns.RecomputeCaches(addon)
+        ns.RefreshListWindow(addon)
+      end
+    end)
 
   -- Reagent sort buttons: N R E S
   f.SortBar = CreateFrame("Frame", nil, f)
@@ -295,7 +294,19 @@ function ns.RefreshListWindow(addon)
   end
 
   FauxScrollFrame_Update(f.Scroll, total, ROWS, ROW_H)
+
   local offset = FauxScrollFrame_GetOffset(f.Scroll) or 0
+  local maxOffset = math.max(0, (total or 0) - ROWS)
+
+  -- Clamp offset so the list can't "blank" when the dataset shrinks/grows
+  if offset > maxOffset then
+    offset = 0
+    local sb = f.Scroll.ScrollBar or f.Scroll.scrollBar
+    if sb and sb.SetValue then
+      sb:SetValue(0)
+    end
+    FauxScrollFrame_Update(f.Scroll, total, ROWS, ROW_H)
+  end
 
   for i = 1, ROWS do
     local idx = i + offset

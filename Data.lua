@@ -520,16 +520,13 @@ function ns.GetHaveCount(addon, itemID)
     return (bags[itemID] or 0) + (bank[itemID] or 0)
   end
 
-  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
-  if includeAlts then
-    local total = 0
-    for _, entry in pairs(chars) do
-      total = total + countEntry(entry)
-    end
-    return total
+  -- HaveTotal = HaveCurrent + HaveAlt (+ Warbank later, if added)
+  local total = 0
+  for _, entry in pairs(chars) do
+    total = total + countEntry(entry)
   end
 
-  return countEntry(chars[key])
+  return total
 end
 
 -- Called by Core.lua on TRADE_SKILL_LIST_UPDATE / SHOW / NEW_RECIPE_LEARNED
@@ -1683,29 +1680,12 @@ function ns.RecomputeCaches(addon)
     rCache.reused = false
   end
 
-  local function sortN(a, b)
-    return ((a.rawName or a.name or ""):lower()) < ((b.rawName or b.name or ""):lower())
-  end
+    -- Persist the freshly-built reagent rows so display-only rebuilds can reuse them.
+  addon.cache.reagentsList = flat
+
   -- -------------------------
   -- ReagentsDisplay from cached reagentsList (re-sort + regroup with headers)
   -- -------------------------
-  local flat = {}
-  for _, e in ipairs(addon.cache.reagentsList or {}) do
-    table.insert(flat, e)
-  end
-
-  local function nameKey(x) return (x.rawName or x.name or ""):lower() end
-  local function rarityKey(x) return (x.rarity or -1) end
-
-  local function completeAwareCompare(a, b, innerCompare)
-    if a.isComplete ~= b.isComplete then
-      return (a.isComplete == false)
-    end
-    if a.isComplete and b.isComplete then
-      return nameKey(a) < nameKey(b)
-    end
-    return innerCompare(a, b)
-  end
 
   local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"
 

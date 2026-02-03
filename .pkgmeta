@@ -1,3 +1,5 @@
+package-as: DecorShoppingList
+
 externals:
   libs/Ace3:
     url: https://github.com/ace3/ace3

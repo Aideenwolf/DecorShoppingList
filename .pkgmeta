@@ -1,0 +1,19 @@
+externals:
+  libs/Ace3:
+    url: https://github.com/ace3/ace3
+    tag: latest
+
+  libs/LibStub:
+    url: https://repos.wowace.com/wow/libstub/trunk
+
+  libs/PeriodicTable-3.1:
+    url: https://repos.wowace.com/wow/periodictable-3-1/trunk
+
+  libs/LibDataBroker-1.1:
+    url: https://repos.wowace.com/wow/libdatabroker-1-1/trunk
+
+  libs/LibSharedMedia-3.0:
+    url: https://repos.wowace.com/wow/libsharedmedia-3-0/trunk
+
+  libs/LibDBIcon-1.0:
+    url: https://repos.wowace.com/wow/libdbicon-1-0/trunk

@@ -1,0 +1,22 @@
+## Interface: 120000
+## Title: Decor Shopping List
+## Notes: Plan what you want. Gather what you need. /dsl
+## Author: RaniDay
+## Version: 0.1.0
+## Category: Professions
+## SavedVariables: DecorShoppingListDB
+## OptionalDeps: Ace3, LibDataBroker-1.1, LibDBIcon-1.0, LibPeriodicTable-3.1
+
+embeds.xml
+locale/locale.xml
+
+plugins/PluginAPI.lua
+plugins/Homebound.lua
+plugins/Example.lua
+plugins/Template.lua
+
+Data.lua
+ListWindow.lua
+Professions.lua
+Core.lua
+Broker.lua

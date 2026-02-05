@@ -1499,6 +1499,8 @@ function ns.RecomputeCaches(addon)
 		local expacID = itemID and MemoExpacID(itemID) or nil
 		local expacName = MemoExpacName(expacID)
 
+		local pInfo = ns.GetProfessionInfo and ns.GetProfessionInfo(prof) or nil
+
 		local row = {
 		  name = name,
 		  rawName = goal.name or name,
@@ -1507,6 +1509,7 @@ function ns.RecomputeCaches(addon)
 		  itemID = itemID,
 		  outputItemID = itemID,
 		  profession = prof,
+		  professionIcon = pInfo and pInfo.icon or nil,
 		  rarity = rarity,
 		  missing = missingRecipe,
 

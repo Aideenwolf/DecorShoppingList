@@ -4,6 +4,29 @@ ns = ns or {}
 
 local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
 
+-- Single, deterministic profession icons (no API lookups)
+local PROF_ICON = {
+  Alchemy        = "Interface\\ICONS\\Trade_Alchemy",
+  Blacksmithing  = "Interface\\ICONS\\Trade_BlackSmithing",
+  Enchanting     = "Interface\\ICONS\\Trade_Engraving",
+  Engineering    = "Interface\\ICONS\\Trade_Engineering",
+  Inscription    = "Interface\\ICONS\\INV_Inscription_Tradeskill01",
+  Jewelcrafting  = "Interface\\ICONS\\INV_Misc_Gem_01",
+  Leatherworking = "Interface\\ICONS\\Trade_LeatherWorking",
+  Tailoring      = "Interface\\ICONS\\Trade_Tailoring",
+  Cooking        = "Interface\\ICONS\\INV_Misc_Food_15",
+  Fishing        = "Interface\\ICONS\\Trade_Fishing",
+  Herbalism      = "Interface\\ICONS\\Trade_Herbalism",
+  Mining         = "Interface\\ICONS\\Trade_Mining",
+  Skinning       = "Interface\\ICONS\\INV_Misc_Pelt_Wolf_01",
+}
+
+function ns.GetProfessionInfo(profName)
+  profName = tostring(profName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if profName == "" then return nil end
+  return { name = profName, icon = PROF_ICON[profName] }
+end
+
 -- Tracks the last recipe the player viewed/selected in any professions UI (normal or linked)
 local currentRecipeID = nil
 

@@ -169,10 +169,11 @@ function ns.InitListWindow(addon)
     row.Val:SetPoint("RIGHT", row, "RIGHT", -2, 0)
     row.Val:SetJustifyH("RIGHT")
 
-    -- Tooltip
+-- Tooltip
     row:SetScript("OnEnter", function(self)
       if not self.data then return end
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+      GameTooltip:ClearLines()
 
       if self.data.isHeader then
         GameTooltip:AddLine(self.data.name or "", 1, 1, 1)
@@ -182,16 +183,18 @@ function ns.InitListWindow(addon)
 
       local view = addon.db.profile.window.view or "recipes"
 
+      -- Reagents: show item tooltip + counts (keep existing info)
       if view == "reagents" and self.data.itemID then
         GameTooltip:SetItemByID(self.data.itemID)
         GameTooltip:AddLine(" ")
         GameTooltip:AddDoubleLine(L["HAVE"], tostring(self.data.have or 0), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(L["NEED"], tostring(self.data.need or 0), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
+
       else
+        -- Recipes: show crafted item tooltip
         GameTooltip:AddLine(self.data.name or "", 1, 1, 1)
 
-        -- Recipes: show the crafted item (and its itemID) instead of "remaining"
         if view == "recipes" and self.data.recipeID then
           local outID = self.data.outputItemID or self.data.itemID
           if outID then
@@ -201,14 +204,54 @@ function ns.InitListWindow(addon)
         end
       end
 
+      -- Shared "Made with profession" line (recipes + reagents)
+      if self.data.profession then
+        local p = self.data.profession
+        local profName = (type(p) == "table" and (p.name or p.text)) or p
+
+        -- Single icon source (no fallbacks): row-provided icon, else profession table icon
+        local profIcon = self.data.professionIcon
+        if not profIcon and type(p) == "table" then
+          profIcon = p.icon
+        end
+
+        local learned = false
+        if self.data.recipeID then
+          learned = ns.IsRecipeLearned(addon, self.data.recipeID) and true or false
+        end
+
+        local statusText, r, g, b
+        if learned then
+          statusText = "Recipe Learned"
+          r, g, b = 0.2, 1.0, 0.2
+        else
+          statusText = "Recipe Not Learned"
+          r, g, b = 1.0, 0.2, 0.2
+        end
+
+        local scrollIcon = "Interface\\ICONS\\INV_Scroll_03"
+        GameTooltip:AddLine(" ")
+        if profIcon then
+          GameTooltip:AddLine(
+            ("|T%s:16:16:0:0|t Made with |T%s:16:16:0:0|t %s (%s)"):format(scrollIcon, profIcon, tostring(profName or ""), statusText),
+            r, g, b
+          )
+        else
+          GameTooltip:AddLine(
+            ("|T%s:16:16:0:0|t Made with %s (%s)"):format(scrollIcon, tostring(profName or ""), statusText),
+            r, g, b
+          )
+        end
+      end
+
       -- Help text for recipe rows (recipes view only)
       if view == "recipes" and self.data.recipeID then
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine(ICON_SHIFT .. " " .. ICON_LMB .. " Remove 1 from this recipe", 0.8, 0.8, 0.8)
         GameTooltip:AddLine(ICON_SHIFT .. " " .. ICON_RMB .. " Add 1 to this recipe",    0.8, 0.8, 0.8)
       end
-      GameTooltip:Show()
 
+      GameTooltip:Show()
     end)
 
     row:SetScript("OnLeave", function()

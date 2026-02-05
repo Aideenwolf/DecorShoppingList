@@ -517,7 +517,8 @@ function ns.GetHaveCount(addon, itemID)
     if type(entry) ~= "table" then return 0 end
     local bags = entry.bags or {}
     local bank = entry.bank or {}
-    return (bags[itemID] or 0) + (bank[itemID] or 0)
+    local warbank = entry.warbank or {}
+    return (bags[itemID] or 0) + (bank[itemID] or 0) + (warbank[itemID] or 0)
   end
 
   -- HaveTotal = HaveCurrent + HaveAlt (+ Warbank later, if added)
@@ -753,6 +754,8 @@ local function BuildReagentsDisplayOnly(addon)
       isComplete = isComplete,
     })
   end
+
+  local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"
 
   local function nameKey(x) return (x.rawName or ""):lower() end
   local function rarityKey(x) return (x.rarity or -1) end
@@ -1625,7 +1628,6 @@ function ns.RecomputeCaches(addon)
       subSource = subSource,
       isComplete = isComplete,
     })
-
   end
 
   local function nameKey(x) return (x.rawName or ""):lower() end
@@ -1640,52 +1642,6 @@ function ns.RecomputeCaches(addon)
     end
     return innerCompare(a, b)
   end
-
-  local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"
-
-  -- Compute a cheap signature for reagent ordering.
-  -- Order depends on: sort mode, list membership, and completion split (complete vs incomplete).
-  local incompleteCount = 0
-  for _, e in ipairs(flat) do
-    if not e.isComplete then
-      incompleteCount = incompleteCount + 1
-    end
-  end
-
-  local sortSig = table.concat({ mode, tostring(#flat), tostring(incompleteCount) }, "|")
-
-  -- Try to reuse prior ordering to avoid table.sort cost.
-  local rCache = addon.cache._sortCache.reagents
-  if rCache.mode == mode and rCache.sig == sortSig and rCache.order and #rCache.order == #flat then
-    local map = {}
-    for _, e in ipairs(flat) do
-      map[e.itemID] = e
-    end
-
-    local ordered = {}
-    local ok = true
-    for _, id in ipairs(rCache.order) do
-      local e = map[id]
-      if not e then ok = false break end
-      table.insert(ordered, e)
-    end
-
-    if ok and #ordered == #flat then
-      flat = ordered
-      rCache.reused = true
-    else
-      rCache.reused = false
-    end
-  else
-    rCache.reused = false
-  end
-
-    -- Persist the freshly-built reagent rows so display-only rebuilds can reuse them.
-  addon.cache.reagentsList = flat
-
-  -- -------------------------
-  -- ReagentsDisplay from cached reagentsList (re-sort + regroup with headers)
-  -- -------------------------
 
   local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"
 
@@ -1814,7 +1770,6 @@ function ns.RecomputeCaches(addon)
       end
     end
 
-    -- Source: Gathering (parent + subgroups)
     if next(byGather) then
       local gKey = "SRC:GATHER"
       table.insert(display, { isHeader = true, name = "Gathering", groupKey = gKey, profession = gKey, level = 0 })
@@ -1835,7 +1790,6 @@ function ns.RecomputeCaches(addon)
           end
         end
 
-        -- Any unknown gathering subs
         for sub, list in pairs(byGather) do
           local known = false
           for _, k in ipairs(subOrder) do if k == sub then known = true break end end
@@ -1853,7 +1807,6 @@ function ns.RecomputeCaches(addon)
       end
     end
 
-    -- Source: Crafting (parent + subgroups)
     if next(byCraft) then
       local cKey = "SRC:CRAFTING"
       table.insert(display, { isHeader = true, name = "Crafting", groupKey = cKey, profession = cKey, level = 0 })
@@ -1874,7 +1827,6 @@ function ns.RecomputeCaches(addon)
           end
         end
 
-        -- Any unknown crafting subs
         for sub, list in pairs(byCraft) do
           local known = false
           for _, k in ipairs(subOrder) do if k == sub then known = true break end end

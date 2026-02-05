@@ -1,0 +1,14 @@
+# Lua
+*.lua text eol=lf
+
+# WoW addon files
+*.toc text eol=lf
+*.xml text eol=lf
+
+# Docs
+*.md text eol=lf
+
+# Images / binaries
+*.png binary
+*.jpg binary
+*.blp binary

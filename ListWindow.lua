@@ -92,6 +92,13 @@ function ns.InitListWindow(addon)
       end
 
       -- Mark + apply immediately (or defer until combat ends)
+      -- Reset scroll so toggling doesn't leave you staring at a blank region
+      do
+        local sb = f.Scroll and (f.Scroll.ScrollBar or f.Scroll.scrollBar)
+        if sb and sb.SetValue then sb:SetValue(0) end
+      end
+
+      -- Mark + apply immediately (or defer until combat ends)
       addon:MarkDirty("full")
       if addon.inCombat then
         addon.repaintAfterCombat = true

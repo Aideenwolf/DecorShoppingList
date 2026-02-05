@@ -23,8 +23,16 @@ local function ceilDiv(a, b)
 end
 
 local function playerKey()
-  local name = UnitName("player") or "Unknown"
-  local realm = GetRealmName() or "UnknownRealm"
+  local name, realm = UnitFullName("player")
+  if not name or name == "" then
+    return nil, nil
+  end
+
+  realm = realm or GetRealmName()
+  if not realm or realm == "" then
+    return nil, nil
+  end
+
   return realm, (name .. "-" .. realm)
 end
 
@@ -389,6 +397,10 @@ local function GetCharEntry(addon)
   addon.db.global.realms = addon.db.global.realms or {}
 
   local realm, key = playerKey()
+  if not realm or not key then
+    return nil
+  end
+
   local g = addon.db.global.realms
   g[realm] = g[realm] or { chars = {} }
   g[realm].chars[key] = g[realm].chars[key] or {
@@ -543,27 +555,31 @@ function ns.IsRecipeLearned(addon, recipeID)
   if not recipeID then return nil end
   local entry = GetCharEntry(addon)
 
-  if entry.recipes[recipeID] == true then
+  -- Sticky TRUE cache
+  if entry and entry.recipes and entry.recipes[recipeID] == true then
     return true
   end
 
+  -- If the profession UI is not open, we can only trust the sticky TRUE cache.
+  -- Anything not confirmed TRUE is treated as not learned for display purposes.
   if not IsPlayerProfessionUIOpen() then
-    return nil
+    return false
   end
 
-  local learned = nil
+  -- Profession UI is open: query live and promote TRUE only
   if EnsureProfessionsLoaded() and C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
     local info = C_TradeSkillUI.GetRecipeInfo(recipeID)
     if info and info.learned ~= nil then
-      learned = info.learned and true or false
-      if learned == true then
+      local learned = info.learned and true or false
+      if learned == true and entry and entry.recipes then
         entry.recipes[recipeID] = true
       end
       return learned
     end
   end
 
-  return nil
+  -- If we can't query, fall back to "not learned" for consistent UI behavior
+  return false
 end
 
 -- Public wrapper to reuse the local implementation (avoid duplicate logic)

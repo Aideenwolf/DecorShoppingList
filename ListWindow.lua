@@ -190,7 +190,15 @@ function ns.InitListWindow(addon)
         GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
       else
         GameTooltip:AddLine(self.data.name or "", 1, 1, 1)
-        GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
+
+        -- Recipes: show the crafted item (and its itemID) instead of "remaining"
+        if view == "recipes" and self.data.recipeID then
+          local outID = self.data.outputItemID or self.data.itemID
+          if outID then
+            GameTooltip:AddLine(" ")
+            GameTooltip:SetItemByID(outID)
+          end
+        end
       end
 
       -- Help text for recipe rows (recipes view only)

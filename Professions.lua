@@ -107,32 +107,35 @@ end
 
 local function makeTrackWidget(parent, addon)
   local w = CreateFrame("Frame", nil, parent)
-  w:SetSize(210, 26)
-
-  -- Untrack
-  w.Untrack = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
-  w.Untrack:SetSize(80, 24)
-  w.Untrack:SetPoint("LEFT", w, "LEFT", 0, 0)
-  w.Untrack:SetText(L["UNTRACK"] or "Untrack")
+  w:SetSize(140, 26)
 
   -- Qty
   w.Qty = CreateFrame("EditBox", nil, w, "InputBoxTemplate")
   w.Qty:SetSize(44, 24)
-  w.Qty:SetPoint("LEFT", w.Untrack, "RIGHT", 6, 0)
+  w.Qty:SetPoint("LEFT", w, "LEFT", 0, 0)
   w.Qty:SetAutoFocus(false)
   w.Qty:SetNumeric(true)
   w.Qty:SetNumber(1)
 
-  -- Track
+  -- Track (apply qty)
   w.Track = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
   w.Track:SetSize(70, 24)
   w.Track:SetPoint("LEFT", w.Qty, "RIGHT", 6, 0)
   w.Track:SetText(L["TRACK"] or "Track")
 
-  local function getQty()
+  local function getQtyAllowZero()
     local n = tonumber(w.Qty:GetText() or "")
-    if not n or n < 1 then return nil end
-    return math.floor(n)
+    if n == nil then return nil end
+    n = math.floor(n)
+    if n < 0 then return nil end
+    return n
+  end
+
+  local function getCurrentTrackedQty(addon, recipeID)
+    local goals = addon.db and addon.db.profile and addon.db.profile.goals
+    if not goals then return 0 end
+    local g = goals["r:" .. tostring(recipeID)]
+    return (type(g) == "table" and tonumber(g.qty)) or 0
   end
 
   -- Works in both normal and linked mode
@@ -145,25 +148,21 @@ local function makeTrackWidget(parent, addon)
         return info.recipeID
       end
     end
-
-    -- Fallback (linked mode / edge cases)
     return currentRecipeID
   end
 
   w.Track:SetScript("OnClick", function()
-    local q = getQty()
-    if not q then addon:Print(L["INVALID_QTY"]); return end
-    local rid = getSelectedRecipeID()
-    if not rid then addon:Print(L["NO_RECIPE_SELECTED"]); return end
-    ns.SetGoalForRecipe(addon, rid, q)
-  end)
+    local q = getQtyAllowZero()
+    if q == nil then addon:Print(L["INVALID_QTY"]); return end
 
-  w.Untrack:SetScript("OnClick", function()
-    local q = getQty()
-    if not q then addon:Print(L["INVALID_QTY"]); return end
     local rid = getSelectedRecipeID()
     if not rid then addon:Print(L["NO_RECIPE_SELECTED"]); return end
-    ns.SetGoalForRecipe(addon, rid, -q)
+
+    local cur = getCurrentTrackedQty(addon, rid)
+    local delta = q - cur
+    if delta == 0 then return end
+
+    ns.SetGoalForRecipe(addon, rid, delta)
   end)
 
   return w

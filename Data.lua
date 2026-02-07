@@ -552,33 +552,40 @@ end
 -- - Never write FALSE to cache
 -- - Only query live API while the player profession UI is open
 function ns.IsRecipeLearned(addon, recipeID)
-  if not recipeID then return nil end
-  local entry = GetCharEntry(addon)
+  if not recipeID then return false end
 
-  -- Sticky TRUE cache
-  if entry and entry.recipes and entry.recipes[recipeID] == true then
-    return true
+  local realm, key = playerKey()
+  local realms = addon.db.global and addon.db.global.realms
+  local realmData = realms and realm and realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return false end
+
+  -- "Known" = learned on ANY character (sticky TRUE across alts)
+  for _, entry in pairs(chars) do
+    if entry and entry.recipes and entry.recipes[recipeID] == true then
+      return true
+    end
   end
 
-  -- If the profession UI is not open, we can only trust the sticky TRUE cache.
-  -- Anything not confirmed TRUE is treated as not learned for display purposes.
+  -- Only when the profession UI is open do we attempt to promote learned state
+  -- (still only promotes TRUE; never writes FALSE)
   if not IsPlayerProfessionUIOpen() then
     return false
   end
 
-  -- Profession UI is open: query live and promote TRUE only
+  local cur = chars[key]
   if EnsureProfessionsLoaded() and C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
     local info = C_TradeSkillUI.GetRecipeInfo(recipeID)
     if info and info.learned ~= nil then
       local learned = info.learned and true or false
-      if learned == true and entry and entry.recipes then
-        entry.recipes[recipeID] = true
+      if learned == true and cur then
+        cur.recipes = cur.recipes or {}
+        cur.recipes[recipeID] = true
       end
       return learned
     end
   end
 
-  -- If we can't query, fall back to "not learned" for consistent UI behavior
   return false
 end
 
@@ -1069,6 +1076,8 @@ function ns.RecomputeDisplayOnly(addon)
   end
   table.sort(profNames)
 
+  local rMode = (addon.db.profile.window and addon.db.profile.window.recipeSort) or "N"
+
   for _, profName in ipairs(profNames) do
     table.insert(addon.cache.recipesDisplay, {
       isHeader = true,
@@ -1080,16 +1089,48 @@ function ns.RecomputeDisplayOnly(addon)
     })
 
     local list = byProf[profName]
-    table.sort(list, function(a, b)
-      local ar, br = a.rarity or -1, b.rarity or -1
-      if ar ~= br then return ar > br end
-      return (a.name or "") < (b.name or "")
-    end)
+    local rMode = (addon.db.profile.window and addon.db.profile.window.recipeSort) or "N"
+
+    if rMode == "E" then
+      table.sort(list, function(a, b)
+        local ae, be = (a.expacID or -1), (b.expacID or -1)
+        if ae ~= be then return ae > be end
+        return (a.name or "") < (b.name or "")
+      end)
+    else
+      table.sort(list, function(a, b)
+        return (a.name or "") < (b.name or "")
+      end)
+    end
 
     if not collapsed["PROF:" .. profName] and not collapsed[profName] then
-      for _, r in ipairs(list) do
-        r.level = 1
-        table.insert(addon.cache.recipesDisplay, r)
+      if rMode == "E" then
+        local lastExpac = nil
+        for _, r in ipairs(list) do
+          local expacID = r.expacID or -1
+          if expacID ~= lastExpac then
+            lastExpac = expacID
+            table.insert(addon.cache.recipesDisplay, {
+              isHeader = true,
+              profession = profName,
+              expacID = expacID,
+              name = r.expacName or "Unknown",
+              remaining = nil,
+              groupKey = "PROF:" .. profName .. ":EXP:" .. tostring(expacID),
+              level = 2,
+            })
+          end
+
+          if not collapsed["PROF:" .. profName .. ":EXP:" .. tostring(expacID)] then
+            r.level = 2
+            table.insert(addon.cache.recipesDisplay, r)
+          end
+        end
+      else
+        for _, r in ipairs(list) do
+          r.level = 1
+          table.insert(addon.cache.recipesDisplay, r)
+        end
       end
     end
   end
@@ -1563,9 +1604,10 @@ function ns.RecomputeCaches(addon)
     })
 
     local list = byProf[profName]
-    -- Reuse prior sorted order if the membership hasn't changed
+    -- Reuse prior sorted order if the membership hasn't changed (and sort mode matches)
     local profCache = addon.cache._sortCache.recipesByProf
-    local sig = tostring(#list)
+    local rMode = (addon.db.profile.window and addon.db.profile.window.recipeSort) or "N"
+    local sig = tostring(#list) .. "|" .. tostring(rMode)
 
     local entry = profCache[profName]
     if entry and entry.sig == sig and entry.order then
@@ -1592,11 +1634,17 @@ function ns.RecomputeCaches(addon)
     end
 
     if not entry then
-      table.sort(list, function(a, b)
-        local ar, br = a.rarity or -1, b.rarity or -1
-        if ar ~= br then return ar > br end
-        return (a.name or "") < (b.name or "")
-      end)
+      if rMode == "E" then
+        table.sort(list, function(a, b)
+          local ae, be = (a.expacID or -1), (b.expacID or -1)
+          if ae ~= be then return ae > be end
+          return (a.name or "") < (b.name or "")
+        end)
+      else
+        table.sort(list, function(a, b)
+          return (a.name or "") < (b.name or "")
+        end)
+      end
 
       local order = {}
       for _, r in ipairs(list) do
@@ -1606,9 +1654,33 @@ function ns.RecomputeCaches(addon)
     end
 
     if not collapsed["PROF:" .. profName] and not collapsed[profName] then
-      for _, r in ipairs(list) do
-		r.level = 1
-        table.insert(addon.cache.recipesDisplay, r)
+      if rMode == "E" then
+        local lastExpac = nil
+        for _, r in ipairs(list) do
+          local expacID = r.expacID or -1
+          if expacID ~= lastExpac then
+            lastExpac = expacID
+            table.insert(addon.cache.recipesDisplay, {
+              isHeader = true,
+              profession = profName,
+              expacID = expacID,
+              name = r.expacName or "Unknown",
+              remaining = nil,
+              groupKey = "PROF:" .. profName .. ":EXP:" .. tostring(expacID),
+              level = 2,
+            })
+          end
+
+          if not collapsed["PROF:" .. profName .. ":EXP:" .. tostring(expacID)] then
+            r.level = 2
+            table.insert(addon.cache.recipesDisplay, r)
+          end
+        end
+      else
+        for _, r in ipairs(list) do
+          r.level = 1
+          table.insert(addon.cache.recipesDisplay, r)
+        end
       end
     end
   end

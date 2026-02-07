@@ -11,6 +11,8 @@ local ROW_H = 22
 local ICON_LMB = "|A:newplayertutorial-icon-mouse-leftbutton:14:14|a"
 local ICON_RMB = "|A:newplayertutorial-icon-mouse-rightbutton:14:14|a"
 local ICON_SHIFT = "|cffffd100SHIFT|r"
+local ICON_CTRL  = "|cffffd100CTRL|r"
+local ICON_ALT   = "|cffffd100ALT|r"
 
 function ns.ApplyWindowStateFromDB(addon)
   local db = addon.db.profile.window
@@ -22,10 +24,11 @@ function ns.ApplyWindowStateFromDB(addon)
   f:SetSize(db.w or 360, db.h or 420)
 end
 
-local function EnsureDefaults(addon)
+function EnsureDefaults(addon)
   addon.db.profile.window = addon.db.profile.window or {}
   addon.db.profile.window.view = addon.db.profile.window.view or "recipes"
   addon.db.profile.window.reagentSort = addon.db.profile.window.reagentSort or "E"
+  addon.db.profile.window.recipeSort = addon.db.profile.window.recipeSort or "N"
   addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
 end
 
@@ -120,7 +123,12 @@ function ns.InitListWindow(addon)
     b:SetText(letter)
     b.letter = letter
   b:SetScript("OnClick", function()
-    addon.db.profile.window.reagentSort = letter
+    local view = addon.db.profile.window.view or "recipes"
+    if view == "recipes" then
+      addon.db.profile.window.recipeSort = letter
+    else
+      addon.db.profile.window.reagentSort = letter
+    end
     addon:MarkDirty("display")
   end)
 
@@ -151,15 +159,15 @@ function ns.InitListWindow(addon)
     end
 
     -- Icon + text
-	row.StatusIcon = row:CreateTexture(nil, "ARTWORK")
-	row.StatusIcon:SetSize(14, 14)
-	row.StatusIcon:SetPoint("LEFT", row, "LEFT", 2, 0)
-	row.StatusIcon:Hide()
+	  row.StatusIcon = row:CreateTexture(nil, "ARTWORK")
+	  row.StatusIcon:SetSize(14, 14)
+	  row.StatusIcon:SetPoint("LEFT", row, "LEFT", 2, 0)
+	  row.StatusIcon:Hide()
 
-	row.Icon = row:CreateTexture(nil, "ARTWORK")
-	row.Icon:SetSize(16, 16)
-	row.Icon:SetPoint("LEFT", row.StatusIcon, "RIGHT", 2, 0)
-	row.Icon:Hide()
+	  row.Icon = row:CreateTexture(nil, "ARTWORK")
+	  row.Icon:SetSize(16, 16)
+	  row.Icon:SetPoint("LEFT", row.StatusIcon, "RIGHT", 2, 0)
+	  row.Icon:Hide()
 
     row.Name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4, 0)
@@ -247,8 +255,11 @@ function ns.InitListWindow(addon)
       -- Help text for recipe rows (recipes view only)
       if view == "recipes" and self.data.recipeID then
         GameTooltip:AddLine(" ")
-        GameTooltip:AddLine(ICON_SHIFT .. " " .. ICON_LMB .. " Remove 1 from this recipe", 0.8, 0.8, 0.8)
-        GameTooltip:AddLine(ICON_SHIFT .. " " .. ICON_RMB .. " Add 1 to this recipe",    0.8, 0.8, 0.8)
+        GameTooltip:AddLine(ICON_SHIFT .. " " .. ICON_RMB .. " Link recipe", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(ICON_SHIFT .. " " .. ICON_LMB .. " Open recipe", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(ICON_CTRL  .. " " .. ICON_LMB .. " Add 1 to this recipe", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(ICON_CTRL  .. " " .. ICON_RMB .. " Remove 1 from this recipe", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(ICON_ALT   .. " " .. ICON_RMB .. " Attempt to craft", 0.8, 0.8, 0.8)
       end
 
       GameTooltip:Show()
@@ -258,7 +269,7 @@ function ns.InitListWindow(addon)
       GameTooltip:Hide()
     end)
 
-    -- Clicks: header collapse + shift +/-1 for recipes
+    -- Clicks: header collapse + modifiers for recipes
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     row:SetScript("OnClick", function(self, button)
       local d = self.data
@@ -266,33 +277,58 @@ function ns.InitListWindow(addon)
 
       local view = addon.db.profile.window.view or "recipes"
 
-	-- Header click: collapse/expand (recipes + reagents)
-	if d.isHeader then
-	  local key = d.groupKey or d.profession or d.name
-	  if not key then return end
+      -- Header click: collapse/expand (recipes + reagents)
+      if d.isHeader then
+        local key = d.groupKey or d.profession or d.name
+        if not key then return end
 
-	  addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
-	  addon.db.profile.window.collapsed[key] = not addon.db.profile.window.collapsed[key]
-	  addon:MarkDirty("display")
-	  return
-	end
+        addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
+        addon.db.profile.window.collapsed[key] = not addon.db.profile.window.collapsed[key]
+        addon:MarkDirty("display")
+        return
+      end
 
-      -- Shift-click +/-1 on recipe rows
       if view ~= "recipes" then return end
-      if not IsShiftKeyDown() then return end
 
       local rid = d.recipeID
       if not rid then return end
 
-      if button == "LeftButton" then
-        ns.SetGoalForRecipe(addon, rid, -1)
-      elseif button == "RightButton" then
-        ns.SetGoalForRecipe(addon, rid, 1)
-      else
+      -- Priority: ALT > CTRL > SHIFT
+      if IsAltKeyDown() then
+        -- Alt + Right: attempt craft (current character, UI-dependent)
+        if button ~= "RightButton" then return end
+        if ns.TryCraftRecipe then
+          ns.TryCraftRecipe(addon, rid)
+        end
         return
       end
 
-      addon:MarkDirty("full")
+      if IsControlKeyDown() then
+        -- Ctrl + Left: Add 1, Ctrl + Right: Remove 1
+        if button == "LeftButton" then
+          ns.SetGoalForRecipe(addon, rid, 1)
+        elseif button == "RightButton" then
+          ns.SetGoalForRecipe(addon, rid, -1)
+        else
+          return
+        end
+        addon:MarkDirty("full")
+        return
+      end
+
+      if IsShiftKeyDown() then
+        -- Shift + Right: link recipe, Shift + Left: open recipe (current character + UI)
+        if button == "RightButton" then
+          if ns.LinkRecipe then
+            ns.LinkRecipe(rid)
+          end
+        elseif button == "LeftButton" then
+          if ns.OpenRecipeIfPossible then
+            ns.OpenRecipeIfPossible(addon, rid)
+          end
+        end
+        return
+      end
     end)
 
     f.Rows[i] = row
@@ -331,10 +367,27 @@ function ns.RefreshListWindow(addon)
   f.ReagentsTab:SetEnabled(view ~= "reagents")
   f.Alts:SetChecked(addon.db.profile.includeAlts)
 
-  -- Sort bar only visible on Reagents view
-  f.SortBar:SetShown(view == "reagents")
+  -- Sort bar visible on Recipes + Reagents views
+  f.SortBar:SetShown(view == "reagents" or view == "recipes")
 
-  if view == "reagents" then
+  if view == "recipes" then
+    -- Only N/E apply to recipes
+    f.SortN:Show()
+    f.SortE:Show()
+    f.SortR:Hide()
+    f.SortS:Hide()
+
+    local mode = addon.db.profile.window.recipeSort or "N"
+    f.SortN:SetEnabled(mode ~= "N")
+    f.SortE:SetEnabled(mode ~= "E")
+
+  elseif view == "reagents" then
+    -- N/R/E/S apply to reagents
+    f.SortN:Show()
+    f.SortR:Show()
+    f.SortE:Show()
+    f.SortS:Show()
+
     local mode = addon.db.profile.window.reagentSort or "E"
     f.SortN:SetEnabled(mode ~= "N")
     f.SortR:SetEnabled(mode ~= "R")
@@ -378,12 +431,46 @@ function ns.RefreshListWindow(addon)
       row:Show()
 
       if entry.isHeader then
-	    row.StatusIcon:Hide()
-        row.Icon:Hide()
+        row.StatusIcon:Hide()
 
-        -- Header text should start at the far left (not after icon)
+        -- Header icon: ONLY show for profession headers (not expansion/source/etc.)
+        local isProfHeader = false
+        if view == "recipes" then
+          isProfHeader = (entry.groupKey and entry.groupKey:match("^PROF:")) or (type(entry.profession) == "string" and entry.profession ~= "")
+        elseif view == "reagents" then
+          isProfHeader = (type(entry.profession) == "string" and entry.profession ~= "" and entry.profession:match("^PROF:"))
+        end
+
+        local headerIcon
+        local profName
+
+        if isProfHeader then
+          if view == "recipes" and entry.groupKey and entry.groupKey:match("^PROF:") then
+            profName = entry.name
+          elseif type(entry.profession) == "string" and entry.profession ~= "" then
+            profName = entry.profession:gsub("^PROF:", "")
+          end
+
+          if profName and ns.GetProfessionInfo then
+            local pInfo = ns.GetProfessionInfo(profName)
+            headerIcon = pInfo and pInfo.icon or nil
+          end
+        end
+
+        -- Headers should NEVER appear indented: force icon + name anchors flush-left
+        row.Icon:ClearAllPoints()
+        row.Icon:SetPoint("LEFT", row, "LEFT", 2, 0)
+
         row.Name:ClearAllPoints()
-        row.Name:SetPoint("LEFT", row, "LEFT", 2, 0)
+
+        if headerIcon then
+          row.Icon:SetTexture(headerIcon)
+          row.Icon:Show()
+          row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4, 0)
+        else
+          row.Icon:Hide()
+          row.Name:SetPoint("LEFT", row, "LEFT", 2, 0)
+        end
 
         local key = entry.groupKey or entry.profession or entry.name
         local collapsed = addon.db.profile.window
@@ -391,15 +478,23 @@ function ns.RefreshListWindow(addon)
           and addon.db.profile.window.collapsed[key]
 
         local prefix = collapsed and "+ " or "- "
-        row.Name:SetText(prefix .. (entry.name or ""))
+        local headerName = (entry.name or ""):gsub("^%s+", "")
+        row.Name:SetText(prefix .. headerName)
         row.Val:SetText("")
         row.Name:SetTextColor(1, 0.82, 0)
         row.Val:SetTextColor(1, 1, 1)
 
       else
-        -- Non-headers: restore normal anchor (after icon)
+        -- Non-headers: items are ALWAYS indented (including the icon)
+        local ITEM_INDENT = 12
+
+        row.Icon:ClearAllPoints()
+        row.Icon:SetPoint("LEFT", row, "LEFT", 2 + ITEM_INDENT, 0)
+
+        row.StatusIcon:ClearAllPoints()
+        row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+
         row.Name:ClearAllPoints()
-        row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4, 0)
 
         -- Icon selection
         local tex
@@ -426,13 +521,20 @@ function ns.RefreshListWindow(addon)
           row.Icon:Hide()
         end
 
-        -- Name (with indent levels for grouped reagent views)
-        if view == "recipes" and entry.missing then
+        -- Name: items ALWAYS have one fixed indent (headers never do)
+        local indentPx = 12
+
+        row.Name:ClearAllPoints()
+        if row.Icon:IsShown() then
+          row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4 + indentPx, 0)
+        else
+          row.Name:SetPoint("LEFT", row, "LEFT", 2 + indentPx, 0)
+        end
+
+        if view == "recipes" and entry.recipeID and (not ns.IsRecipeLearned(addon, entry.recipeID)) then
           row.Name:SetText("|TInterface\\RaidFrame\\ReadyCheck-NotReady:14:14|t " .. (entry.name or ""))
         else
-          local lvl = entry.level or 0
-          local indent = string.rep("  ", lvl)
-          row.Name:SetText(indent .. (entry.name or ""))
+          row.Name:SetText(entry.name or "")
         end
 
         row.Val:SetText(tostring(entry.remaining or 0))

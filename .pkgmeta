@@ -8,7 +8,7 @@ externals:
   libs/LibStub:
     url: https://repos.wowace.com/wow/libstub/trunk
 
-  libs/PeriodicTable-3.1:
+  libs/LibPeriodicTable-3.1:
     url: https://repos.wowace.com/wow/periodictable-3-1/trunk
 
   libs/LibDataBroker-1.1:

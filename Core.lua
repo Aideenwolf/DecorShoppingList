@@ -19,6 +19,20 @@ local defaults = {
     },
     minimap = { hide = true },
     includeAlts = false,
+    visual = {
+      textOutline = true,
+      textSize = 10,
+      textFont = "Friz Quadrata TT",
+      textColor = {
+        header = { 1, 0.82, 0, 1 },
+      },
+      borderColor = { 0.75, 0.75, 0.78, 1 },
+      backgroundColor = { 0.09, 0.09, 0.10, 0.25 },
+      scrollbarColor = { 0.75, 0.75, 0.78, 1 },
+      titleTabColor = { 0.20, 0.20, 0.22, 0.92 },
+      showRoundedBorder = true,
+      backgroundMedia = "Solid",
+    },
 
     goals = {},
     recipeByItem = {},
@@ -53,6 +67,9 @@ function DSL:OnInitialize()
   self:RegisterChatCommand("dsl", "SlashCommand")
 
   ns.InitListWindow(self)
+  if ns.InitConfig then
+    ns.InitConfig(self)
+  end
   ns.InitProfessions(self)
   ns.InitBroker(self)
 
@@ -75,6 +92,7 @@ function DSL:OnEnable()
   self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", "OnTradeSkillListUpdate")
   self:RegisterEvent("TRADE_SKILL_SHOW", "OnTradeSkillListUpdate")
   self:RegisterEvent("NEW_RECIPE_LEARNED", "OnTradeSkillListUpdate")
+  self:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "OnInteractionFrameShow")
 
 end
 
@@ -121,6 +139,15 @@ function DSL:OnInventoryChanged()
   self._dslLastSnapshot = GetTime()
 
   self:MarkDirty("inventory")
+end
+
+function DSL:OnInteractionFrameShow(_, interactionType)
+  local pit = Enum and Enum.PlayerInteractionType
+  if not pit then return end
+
+  if interactionType == pit.AccountBank or interactionType == pit.Banker then
+    self:OnBankOpened()
+  end
 end
 
 function DSL:OnPlayerLogout()

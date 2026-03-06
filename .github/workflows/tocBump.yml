@@ -1,0 +1,72 @@
+# Adapted with permission from Numynum's version here:
+# https://github.com/NumyAddon/TalentTreeTweaks/blob/master/.github/workflows/tocBump.yml
+
+name: Update TOC file
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Commit message"
+        required: false
+        default: "Update TOC"
+
+permissions:
+  contents: write
+
+jobs:
+  bump-toc:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get next version
+        uses: reecetech/version-increment@2024.10.1
+        id: version
+        with:
+          scheme: semver
+          increment: patch
+          tag_prefix: v
+
+      - name: Log the version
+        run: |
+          echo "::notice Version is ${{ steps.version.outputs.v-version }}"
+          echo "::notice TOC Version will be ${{ steps.version.outputs.version }}"
+
+      - name: Update DecorShoppingList.toc Version field
+        run: |
+          TOC_FILE="DecorShoppingList.toc"
+          if [ ! -f "$TOC_FILE" ]; then
+            echo "::error::TOC file not found: $TOC_FILE"
+            exit 1
+          fi
+
+          # Replace the Version line with the next semver (no 'v' prefix in TOC)
+          sed -i -E "s/^(##[[:space:]]*Version:[[:space:]]*).*/\1${{ steps.version.outputs.version }}/" "$TOC_FILE"
+
+          # Fail if Version line wasn't found/updated
+          if ! grep -qE "^##[[:space:]]*Version:[[:space:]]*${{ steps.version.outputs.version }}$" "$TOC_FILE"; then
+            echo "::error::Failed to update ## Version: in $TOC_FILE"
+            exit 1
+          fi
+
+      - name: Commit TOC bump
+        run: |
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git config user.name "${{ github.actor }}"
+
+          git add DecorShoppingList.toc
+          git commit -m "${{ github.event.inputs.message }} (${{ steps.version.outputs.v-version }})"
+
+      - name: Create tag
+        run: |
+          git tag -a "${{ steps.version.outputs.v-version }}" -m "${{ steps.version.outputs.v-version }}"
+
+      - name: Push commit and tag
+        run: |
+          git push
+          git push --tags

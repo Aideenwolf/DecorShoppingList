@@ -16,6 +16,7 @@ plugins/Example.lua
 plugins/Template.lua
 
 Data.lua
+Config.lua
 ListWindow.lua
 Professions.lua
 Core.lua

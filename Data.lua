@@ -404,13 +404,14 @@ local function GetCharEntry(addon)
   local g = addon.db.global.realms
   g[realm] = g[realm] or { chars = {} }
   g[realm].chars[key] = g[realm].chars[key] or {
-    items = {}, bags = {}, bank = {}, recipes = {}, profs = {}, lastSeen = 0
+    items = {}, bags = {}, bank = {}, warbank = {}, recipes = {}, profs = {}, lastSeen = 0
   }
 
   local entry = g[realm].chars[key]
   entry.items    = entry.items    or {}
   entry.bags     = entry.bags     or {}
   entry.bank     = entry.bank     or {}
+  entry.warbank  = entry.warbank  or {}
   entry.recipes  = entry.recipes  or {}
   entry.profs    = entry.profs    or {}
   entry.lastSeen = entry.lastSeen or 0
@@ -479,6 +480,21 @@ function ns.SnapshotCurrentCharacter(addon)
     end
   end
 
+  local function GetAccountBankTabBagIDs()
+    local out = {}
+    local bagIndex = Enum and Enum.BagIndex
+    if type(bagIndex) ~= "table" then return out end
+
+    for key, bagID in pairs(bagIndex) do
+      if type(key) == "string" and type(bagID) == "number" and string.find(key, "AccountBankTab", 1, true) then
+        table.insert(out, bagID)
+      end
+    end
+
+    table.sort(out)
+    return out
+  end
+
   -- Bags
   entry.bags = {}
   for bag = 0, 4 do
@@ -503,6 +519,22 @@ function ns.SnapshotCurrentCharacter(addon)
 
     -- Reagent bank container (Retail): -3
     scanBag(-3, entry.bank)
+  end
+
+  local warbankOpen = false
+  if C_Bank and C_Bank.IsAccountBankOpen then
+    local ok, v = pcall(C_Bank.IsAccountBankOpen)
+    warbankOpen = (ok and v) and true or false
+  end
+
+  if warbankOpen or bankOpen then
+    local tabBagIDs = GetAccountBankTabBagIDs()
+    if #tabBagIDs > 0 then
+      entry.warbank = {}
+      for _, bagID in ipairs(tabBagIDs) do
+        scanBag(bagID, entry.warbank)
+      end
+    end
   end
 end
 

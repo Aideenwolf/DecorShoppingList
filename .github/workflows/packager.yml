@@ -1,0 +1,47 @@
+# This workflow builds a packaged zip of the addon when a version tag is pushed
+name: Package release versions
+
+# Run this workflow when a tag like v0.1.0 is pushed
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+# Allow the workflow to create GitHub releases
+permissions:
+  contents: write
+
+jobs:
+
+  # Main packaging job
+  release:
+
+    # Use a standard Linux runner
+    runs-on: ubuntu-latest
+
+    # Environment variables used by the packager
+    # If these secrets exist, the addon will also upload to those sites
+    env:
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}   # Required for GitHub releases
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}       # Optional: upload to CurseForge
+      WOWI_API_TOKEN: ${{ secrets.WOWI_API_TOKEN }}  # Optional: upload to WoWInterface
+      WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}  # Optional: upload to Wago
+
+    steps:
+
+      # Step 1: Download the repository code so the workflow can use it
+      - name: Clone project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Required for proper changelog generation
+
+      # Step 2: Replace TOC placeholders (like @project-version@)
+      # with the actual version from the git tag
+      - name: Replace toc-versions
+        uses: NumyAddon/ToCVersions@v1
+
+      # Step 3: Run the WoW packager
+      # This reads .pkgmeta, embeds libraries, builds the release zip,
+      # and uploads the package to any configured sites.
+      - name: Package and upload releases
+        uses: BigWigsMods/packager@v2

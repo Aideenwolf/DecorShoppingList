@@ -5,7 +5,7 @@ name: Package release versions
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 # Allow the workflow to create GitHub releases
 permissions:

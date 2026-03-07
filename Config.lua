@@ -80,6 +80,21 @@ local function setDropdown(frame, width, buildFn, selectedName)
   UIDropDownMenu_SetSelectedName(frame, selectedName)
 end
 
+local function setNameDropdown(frame, width, names, selectedName, onSelected)
+  setDropdown(frame, width, function(_, level)
+    for _, name in ipairs(names) do
+      local selected = name
+      local info = UIDropDownMenu_CreateInfo()
+      info.text = selected
+      info.func = function()
+        UIDropDownMenu_SetSelectedName(frame, selected)
+        onSelected(selected)
+      end
+      UIDropDownMenu_AddButton(info, level)
+    end
+  end, selectedName)
+end
+
 local function getFontNames(defaultName)
   local lsm = GetLSM()
   local names = (lsm and lsm.List and lsm:List("font")) or {}
@@ -134,6 +149,13 @@ local function refreshVisuals(addon)
   if ns.ApplyConfigWindowVisuals then ns.ApplyConfigWindowVisuals(addon) end
   if ns.ApplyWindowVisuals then ns.ApplyWindowVisuals(addon) end
   if ns.RefreshListWindow then ns.RefreshListWindow(addon) end
+end
+
+local function updateVisual(addon, mutator)
+  local v = ns.GetVisualSettings(addon)
+  if not v then return end
+  if mutator then mutator(v) end
+  refreshVisuals(addon)
 end
 
 local function openColorPicker(color, onChanged, allowAlpha)
@@ -262,7 +284,7 @@ local function buildConfigWindow(addon)
   f.FieldLabels = {}
 
   local function onVisualChanged()
-    refreshVisuals(addon)
+    updateVisual(addon)
   end
 
   local function addSectionLabel(text, x, yy)
@@ -291,9 +313,9 @@ local function buildConfigWindow(addon)
   f.Outline.text:SetText("Text Outline")
   setFontStringColor(f.Outline.text, COLOR_FIELD)
   f.Outline:SetScript("OnClick", function(self)
-    local v = ns.GetVisualSettings(addon)
-    v.textOutline = not not self:GetChecked()
-    refreshVisuals(addon)
+    updateVisual(addon, function(v)
+      v.textOutline = not not self:GetChecked()
+    end)
   end)
   y = y - 30
 
@@ -305,14 +327,15 @@ local function buildConfigWindow(addon)
   f.SizeBox:SetAutoFocus(false)
   f.SizeBox:SetNumeric(true)
   f.SizeBox:SetScript("OnEnterPressed", function(self)
-    local v = ns.GetVisualSettings(addon)
     local n = tonumber(self:GetText() or "")
     if n then
       if n < 8 then n = 8 end
       if n > 24 then n = 24 end
-      v.textSize = math.floor(n)
-      self:SetNumber(v.textSize)
-      refreshVisuals(addon)
+      n = math.floor(n)
+      self:SetNumber(n)
+      updateVisual(addon, function(v)
+        v.textSize = n
+      end)
     end
     self:ClearFocus()
   end)
@@ -353,9 +376,9 @@ local function buildConfigWindow(addon)
   f.Rounded.text:SetText("Show Rounded Border")
   setFontStringColor(f.Rounded.text, COLOR_FIELD)
   f.Rounded:SetScript("OnClick", function(self)
-    local v = ns.GetVisualSettings(addon)
-    v.showRoundedBorder = not not self:GetChecked()
-    refreshVisuals(addon)
+    updateVisual(addon, function(v)
+      v.showRoundedBorder = not not self:GetChecked()
+    end)
   end)
   y = y - 34
 
@@ -399,42 +422,19 @@ function ns.ShowConfigWindow(addon, show)
   f.SizeBox:SetNumber(v.textSize)
   f.Rounded:SetChecked(v.showRoundedBorder)
 
-  setDropdown(f.FontDrop, 255, function(self, level)
-    local names = getFontNames(v.textFont)
-    for _, name in ipairs(names) do
-      local selectedName = name
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = selectedName
-      info.func = function()
-        v.textFont = selectedName
-        UIDropDownMenu_SetSelectedName(f.FontDrop, selectedName)
-        refreshVisuals(addon)
-      end
-      UIDropDownMenu_AddButton(info, level)
-    end
-  end, v.textFont)
+  setNameDropdown(f.FontDrop, 255, getFontNames(v.textFont), v.textFont, function(name)
+    updateVisual(addon, function(visual)
+      visual.textFont = name
+    end)
+  end)
 
-  setDropdown(f.BgDrop, 255, function(self, level)
-    local out = getBackgroundNames()
-    for _, name in ipairs(out) do
-      local selectedName = name
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = selectedName
-      info.func = function()
-        v.backgroundMedia = selectedName
-        UIDropDownMenu_SetSelectedName(f.BgDrop, selectedName)
-        refreshVisuals(addon)
-      end
-      UIDropDownMenu_AddButton(info, level)
-    end
-  end, v.backgroundMedia)
+  setNameDropdown(f.BgDrop, 255, getBackgroundNames(), v.backgroundMedia, function(name)
+    updateVisual(addon, function(visual)
+      visual.backgroundMedia = name
+    end)
+  end)
 
   refreshVisuals(addon)
 
   f:SetShown(show ~= false)
 end
-
-
-
-
-

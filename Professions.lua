@@ -392,23 +392,16 @@ local function makeTrackWidget(parent, addon)
     return n
   end
 
-  local function getCurrentTrackedQty(addon, recipeID)
-    return GetCurrentTrackedQty(addon, recipeID)
-  end
-
-  -- Works in both normal and linked mode
-  local function getSelectedRecipeID()
-    return GetSelectedRecipeID()
-  end
+  -- Works in both normal and linked mode.
 
   w.Track:SetScript("OnClick", function()
     local q = getQtyAllowZero()
     if q == nil then addon:Print(L["INVALID_QTY"]); return end
 
-    local rid = getSelectedRecipeID()
+    local rid = GetSelectedRecipeID()
     if not rid then addon:Print(L["NO_RECIPE_SELECTED"]); return end
 
-    local cur = getCurrentTrackedQty(addon, rid)
+    local cur = GetCurrentTrackedQty(addon, rid)
     local delta = q - cur
     if delta == 0 then return end
 
@@ -449,8 +442,8 @@ function ns.InitProfessions(addon)
 
   -- Try now and again shortly (UI may load later)
   if not tryAttach() then
-    addon:ScheduleTimer(function() tryAttach() end, 2.0)
-    addon:ScheduleTimer(function() tryAttach() end, 5.0)
+    addon:ScheduleTimer(tryAttach, 2.0)
+    addon:ScheduleTimer(tryAttach, 5.0)
   end
 end
 

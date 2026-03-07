@@ -327,6 +327,8 @@ function ns.InitListWindow(addon)
     b:SetSize(24, 18)
     b:SetPoint("LEFT", f.SortBar, "LEFT", x, 0)
     b:SetText(letter)
+    b.letter = letter
+
     b:SetScript("OnClick", function()
       local view = addon.db.profile.window.view or "recipes"
       if view == "recipes" then
@@ -335,6 +337,23 @@ function ns.InitListWindow(addon)
         addon.db.profile.window.reagentSort = letter
       end
       addon:MarkDirty("display")
+    end)
+
+    b:SetScript("OnEnter", function(self)
+      local map = {
+        N = "Name",
+        R = "Rarity",
+        E = "Expansion",
+        S = "Source",
+      }
+      local meaning = map[self.letter] or ""
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:AddLine(meaning, 1, 1, 1)
+      GameTooltip:Show()
+    end)
+
+    b:SetScript("OnLeave", function()
+      GameTooltip:Hide()
     end)
 
     return b
@@ -800,7 +819,12 @@ function ns.RefreshListWindow(addon)
           row.Name:SetTextColor(0.5, 0.5, 0.5, 1)
           row.Val:SetTextColor(0.5, 0.5, 0.5, 1)
         else
-          row.Name:SetTextColor(1, 1, 1, 1)
+          local nr, ng, nb = 1, 1, 1
+          if view == "recipes" and type(entry.rarity) == "number" and entry.rarity >= 0 and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[entry.rarity] then
+            local qc = ITEM_QUALITY_COLORS[entry.rarity]
+            nr, ng, nb = qc.r or 1, qc.g or 1, qc.b or 1
+          end
+          row.Name:SetTextColor(nr, ng, nb, 1)
           row.Val:SetTextColor(1, 1, 1, 1)
         end
       end

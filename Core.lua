@@ -1,4 +1,4 @@
---  DecorShoppingList/Core.lua
+﻿--  DecorShoppingList/Core.lua
 local ADDON, ns = ...
 ns = ns or {}
 local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
@@ -43,6 +43,36 @@ local defaults = {
   }
 }
 
+local function NewDirtyFlags()
+  return { full = false, inventory = false, display = false }
+end
+
+local function HasDirtyFlags(flags)
+  return flags and (flags.full or flags.inventory or flags.display)
+end
+
+local function SnapshotNow(addon)
+  ns.SnapshotCurrentCharacter(addon)
+  addon._dslLastSnapshot = GetTime()
+end
+
+local function SnapshotIfStale(addon, seconds)
+  local threshold = seconds or 0.15
+  if not addon._dslLastSnapshot or (GetTime() - addon._dslLastSnapshot) > threshold then
+    SnapshotNow(addon)
+  end
+end
+
+local function HandleInventorySnapshotEvent(addon)
+  if addon.inCombat then
+    addon.dirty = true
+    return
+  end
+
+  SnapshotNow(addon)
+  addon:MarkDirty("inventory")
+end
+
 function DSL:OnInitialize()
   self.db = LibStub("AceDB-3.0"):New("DecorShoppingListDB", defaults, true)
 
@@ -55,10 +85,9 @@ function DSL:OnInitialize()
     self.db.profile.migrations.resetCollapsedV1 = true
   end
 
-
   self.inCombat = InCombatLockdown()
   self.dirty = false
-  self.dirtyFlags = { full = false, inventory = false, display = false }
+  self.dirtyFlags = NewDirtyFlags()
   self.repaintAfterCombat = false
   self.refreshTimer = nil
 
@@ -84,7 +113,7 @@ function DSL:OnEnable()
   self:RegisterEvent("PLAYER_REGEN_DISABLED")
   self:RegisterEvent("PLAYER_REGEN_ENABLED")
   self:RegisterEvent("PLAYER_LOGOUT", "OnPlayerLogout")
-  
+
   self:RegisterEvent("BAG_UPDATE_DELAYED", "OnInventoryChanged")
   self:RegisterEvent("BANKFRAME_OPENED", "OnBankOpened")
   self:RegisterEvent("PLAYERBANKSLOTS_CHANGED", "OnInventoryChanged")
@@ -93,7 +122,6 @@ function DSL:OnEnable()
   self:RegisterEvent("TRADE_SKILL_SHOW", "OnTradeSkillListUpdate")
   self:RegisterEvent("NEW_RECIPE_LEARNED", "OnTradeSkillListUpdate")
   self:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "OnInteractionFrameShow")
-
 end
 
 function DSL:PLAYER_REGEN_DISABLED()
@@ -103,9 +131,9 @@ end
 function DSL:PLAYER_REGEN_ENABLED()
   self.inCombat = false
 
-  local f = self.dirtyFlags
-    if f and (f.full or f.inventory or f.display) then
-      self:RecomputeAndRefresh()
+  local flags = self.dirtyFlags
+  if HasDirtyFlags(flags) then
+    self:RecomputeAndRefresh()
     return
   end
 
@@ -118,27 +146,11 @@ function DSL:PLAYER_REGEN_ENABLED()
 end
 
 function DSL:OnBankOpened()
-  if self.inCombat then
-    self.dirty = true
-    return
-  end
-
-  ns.SnapshotCurrentCharacter(self)
-  self._dslLastSnapshot = GetTime()
-
-  self:MarkDirty("inventory")
+  HandleInventorySnapshotEvent(self)
 end
 
 function DSL:OnInventoryChanged()
-  if self.inCombat then
-    self.dirty = true
-    return
-  end
-
-  ns.SnapshotCurrentCharacter(self)
-  self._dslLastSnapshot = GetTime()
-
-  self:MarkDirty("inventory")
+  HandleInventorySnapshotEvent(self)
 end
 
 function DSL:OnInteractionFrameShow(_, interactionType)
@@ -163,15 +175,16 @@ function DSL:OnItemDataLoaded()
     return
   end
 
-  -- Cheap repaint for names/icons; avoid full recompute storms.
+  -- Item data arriving can change cached display names/source classification.
+  -- Use debounced dirty path instead of repaint-only.
   if ns.ListWindow and ns.ListWindow:IsShown() then
-    ns.RefreshListWindow(self)
+    self:MarkDirty("full")
   end
 end
 
 function DSL:OnTradeSkillListUpdate()
   if self.inCombat then
-    self.dirtyFlags = self.dirtyFlags or { full = false, inventory = false, display = false }
+    self.dirtyFlags = self.dirtyFlags or NewDirtyFlags()
     self.dirtyFlags.full = true
     return
   end
@@ -185,7 +198,7 @@ function DSL:OnTradeSkillListUpdate()
 end
 
 function DSL:MarkDirty(reason)
-  self.dirtyFlags = self.dirtyFlags or { full = false, inventory = false, display = false }
+  self.dirtyFlags = self.dirtyFlags or NewDirtyFlags()
 
   if reason == "inventory" then
     self.dirtyFlags.inventory = true
@@ -201,23 +214,19 @@ function DSL:MarkDirty(reason)
   self.refreshTimer = self:ScheduleTimer(function()
     self.refreshTimer = nil
     if self.inCombat then return end
-    local f = self.dirtyFlags
-	if f and (f.full or f.inventory or f.display) then
-	  self:RecomputeAndRefresh()
-	end
+    if HasDirtyFlags(self.dirtyFlags) then
+      self:RecomputeAndRefresh()
+    end
   end, 0.2)
 end
 
 function DSL:RecomputeAndRefresh()
-  local f = self.dirtyFlags or { full = false, inventory = false, display = false }
-  self.dirtyFlags = { full = false, inventory = false, display = false }
+  local flags = self.dirtyFlags or NewDirtyFlags()
+  self.dirtyFlags = NewDirtyFlags()
 
-  if f.full then
+  if flags.full then
     -- Full rebuild (goals/learned/display changes)
-    if not self._dslLastSnapshot or (GetTime() - self._dslLastSnapshot) > 0.15 then
-      ns.SnapshotCurrentCharacter(self)
-      self._dslLastSnapshot = GetTime()
-    end
+    SnapshotIfStale(self, 0.15)
 
     ns.ApplyCompletionByInventoryDelta(self)
     ns.RecomputeCaches(self)
@@ -225,12 +234,9 @@ function DSL:RecomputeAndRefresh()
     return
   end
 
-  if f.inventory then
+  if flags.inventory then
     -- Inventory-only refresh: keep recipe/reagent NEEDS, refresh HAVE/remaining/completion
-    if not self._dslLastSnapshot or (GetTime() - self._dslLastSnapshot) > 0.15 then
-      ns.SnapshotCurrentCharacter(self)
-      self._dslLastSnapshot = GetTime()
-    end
+    SnapshotIfStale(self, 0.15)
     ns.ApplyCompletionByInventoryDelta(self)
 
     if ns.RecomputeReagentsOnly then
@@ -242,8 +248,8 @@ function DSL:RecomputeAndRefresh()
     ns.RefreshListWindow(self)
     return
   end
-  
-  if f.display then
+
+  if flags.display then
     -- Display-only refresh: collapse/sort/view changes should not touch math/state.
     if ns.RecomputeDisplayOnly then
       ns.RecomputeDisplayOnly(self)
@@ -251,7 +257,7 @@ function DSL:RecomputeAndRefresh()
       ns.RecomputeCaches(self)
     end
     ns.RefreshListWindow(self)
-	  return
+    return
   end
 end
 

@@ -147,16 +147,7 @@ local function GetReagentSource(addon, itemID)
     return "Crafting", nil
   end
 
-  -- Force "* Lumber" items into Gathering â†’ Lumbering
-  do
-    local name = GetItemNameFast(itemID)
-    if name and name:match(" Lumber$") then
-      return "Gathering", "Lumbering"
-    end
-  end
-
-
-  -- Gathering sub-types (LibPeriodicTable)
+  -- Gathering sub-types (LibPeriodicTable) first.
   if PT then
     if PT_InSet(itemID, "Tradeskill.Gather.Herbalism") then
       return "Gathering", "Herbalism"
@@ -172,20 +163,86 @@ local function GetReagentSource(addon, itemID)
     end
   end
 
-  -- Fallback heuristics (covers newer mats missing from PT sets)
+  -- Manual gathering backups.
+  -- Force "* Lumber" items into Gathering -> Lumbering
   do
-    local _, _, _, _, classID, subClassID = GetItemInfoInstant(itemID)
-    if classID and subClassID and Enum and Enum.ItemClass and Enum.ItemSubClass and Enum.ItemSubClass.Tradegoods then
-      if classID == Enum.ItemClass.Tradegoods then
-        if subClassID == Enum.ItemSubClass.Tradegoods.MetalAndStone then
-          return "Gathering", "Mining"
-        end
-        if subClassID == Enum.ItemSubClass.Tradegoods.Herb then
-          return "Gathering", "Herbalism"
-        end
-        if subClassID == Enum.ItemSubClass.Tradegoods.Leather then
-          return "Gathering", "Skinning"
-        end
+    local name = GetItemNameFast(itemID)
+    if name and name:match(" Lumber$") then
+      return "Gathering", "Lumbering"
+    end
+    if name and name:match(" Ore$") then
+      return "Gathering", "Mining"
+    end
+  end
+
+  -- Blizzard subcategory mapping.
+  do
+    local _, _, subClassName, _, _, _, _, _, _, _, _, classID, subClassID = GetItemInfoInstant(itemID)
+    local tradeClass = (Enum and Enum.ItemClass and Enum.ItemClass.Tradegoods) or LE_ITEM_CLASS_TRADEGOODS or 7
+    local tg = (Enum and (Enum.ItemTradegoodsSubclass or (Enum.ItemSubClass and Enum.ItemSubClass.Tradegoods))) or {}
+
+    local tgHerb = tg.Herb or 11
+    local tgLeather = tg.Leather or 7
+    local tgParts = tg.Parts or 1
+    local tgCloth = tg.Cloth
+    local tgInscription = tg.Inscription
+    local tgJewelcrafting = tg.Jewelcrafting
+    local tgEnchanting = tg.Enchanting
+    local tgMetal = tg.MetalAndStone or tg.MetalStone or 9
+
+    if classID == tradeClass and subClassID then
+      if subClassID == tgHerb then
+        return "Gathering", "Herbalism"
+      end
+      if subClassID == tgLeather then
+        return "Gathering", "Skinning"
+      end
+      if subClassID == tgParts then
+        return "Crafting", "Engineering"
+      end
+      if tgEnchanting and subClassID == tgEnchanting then
+        return "Crafting", "Enchanting"
+      end
+      if tgCloth and subClassID == tgCloth then
+        return "Crafting", "Tailoring"
+      end
+      if tgInscription and subClassID == tgInscription then
+        return "Crafting", "Inscription"
+      end
+      if tgJewelcrafting and subClassID == tgJewelcrafting then
+        return "Crafting", "Jewelcrafting"
+      end
+      if subClassID == tgMetal then
+        return "Crafting", "Blacksmithing"
+      end
+    end
+
+    -- String fallback for clients where enum keys differ.
+    if type(subClassName) == "string" then
+      local s = string.lower(subClassName)
+      if string.find(s, "herb", 1, true) then
+        return "Gathering", "Herbalism"
+      end
+      if string.find(s, "leather", 1, true) or string.find(s, "hide", 1, true) then
+        return "Gathering", "Skinning"
+      end
+      if string.find(s, "part", 1, true) then
+        return "Crafting", "Engineering"
+      end
+      if string.find(s, "enchant", 1, true) then
+        return "Crafting", "Enchanting"
+      end
+      if string.find(s, "cloth", 1, true) then
+        return "Crafting", "Tailoring"
+      end
+      if string.find(s, "inscription", 1, true) or string.find(s, "ink", 1, true) then
+        return "Crafting", "Inscription"
+      end
+      if string.find(s, "jewel", 1, true) or string.find(s, "gem", 1, true) then
+        return "Crafting", "Jewelcrafting"
+      end
+      if string.find(s, "metal", 1, true) or string.find(s, "stone", 1, true) then
+        return "Crafting", "Blacksmithing"
       end
     end
   end
@@ -218,6 +275,31 @@ local function EnsureRecipeCache(addon)
   if not (addon and addon.db and addon.db.profile) then return nil end
   addon.db.profile.recipeCache = addon.db.profile.recipeCache or {}
   return addon.db.profile.recipeCache
+end
+
+local function EnsureItemNameCache(addon)
+  if not (addon and addon.db and addon.db.profile) then return nil end
+  addon.db.profile.itemNameCache = addon.db.profile.itemNameCache or {}
+  return addon.db.profile.itemNameCache
+end
+
+local function GetItemNameWithCache(addon, itemID)
+  if not itemID then return nil end
+
+  local live = GetItemNameFast(itemID)
+  local cache = EnsureItemNameCache(addon)
+  if live and live ~= "" then
+    if cache then
+      cache[itemID] = live
+    end
+    return live
+  end
+
+  if cache then
+    return cache[itemID]
+  end
+
+  return nil
 end
 
 local function SnapshotRecipeToCache(addon, recipeID, force)
@@ -765,7 +847,7 @@ function ns.ApplyCompletionByInventoryDelta(addon)
         end
 
         if (goal.remaining or 0) <= 0 then
-          local rawName = GetItemNameFast(itemID) or goal.name or ("Item " .. itemID)
+          local rawName = GetItemNameWithCache(addon, itemID) or goal.name or ("Item " .. itemID)
           goals[goalKey] = nil
           addon:Print(string.format(L["COMPLETED_RECIPE"], rawName))
           touched = true
@@ -787,7 +869,7 @@ local function BuildReagentsDisplayOnly(addon)
     local have = ns.GetHaveCount(addon, itemID)
     local remaining = math.max(0, (need or 0) - (have or 0))
 
-    local rawName = GetItemNameFast(itemID) or ("Item " .. itemID)
+    local rawName = GetItemNameWithCache(addon, itemID) or ("Item " .. itemID)
     local isComplete = (remaining <= 0)
     local displayName = isComplete and rawName or ColorizeByQuality(itemID, rawName)
 
@@ -1053,7 +1135,7 @@ end
 
 local function GetRecipeDisplayName(goal)
   if goal.itemID then
-    local itemName = GetItemNameFast(goal.itemID)
+    local itemName = GetItemNameWithCache(addon, goal.itemID)
     if itemName then
       return ColorizeByQuality(goal.itemID, itemName)
     end
@@ -1728,7 +1810,7 @@ function ns.RecomputeCaches(addon)
     local have = ns.GetHaveCount(addon, itemID)
     local remaining = math.max(0, (need or 0) - (have or 0))
 
-    local rawName = GetItemNameFast(itemID) or ("Item " .. itemID)
+    local rawName = GetItemNameWithCache(addon, itemID) or ("Item " .. itemID)
     local isComplete = (remaining <= 0)
 
     -- If complete, do NOT embed quality color codes in the name (so the row greys correctly)
@@ -2075,4 +2157,3 @@ function ns.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, depth)
     end
   end
 end
-

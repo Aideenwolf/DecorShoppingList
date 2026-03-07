@@ -146,10 +146,12 @@ local function openColorPicker(color, onChanged, allowAlpha)
       end
     end
 
+---@diagnostic disable-next-line: undefined-global
     if OpacitySliderFrame and OpacitySliderFrame.GetValue then
+---@diagnostic disable-next-line: undefined-global
       local v = OpacitySliderFrame:GetValue()
       if type(v) == "number" then
-        return 1 - v
+        return  v
       end
     end
 
@@ -172,7 +174,7 @@ local function openColorPicker(color, onChanged, allowAlpha)
     r = prev.r,
     g = prev.g,
     b = prev.b,
-    opacity = 1 - prev.a,
+    opacity = prev.a,
     hasOpacity = allowAlpha and true or false,
     swatchFunc = applyColor,
     opacityFunc = allowAlpha and applyAlpha or nil,

@@ -371,6 +371,7 @@ function ns.InitListWindow(addon)
   -- Remove template-owned body textures so frame background media remains visible.
   for _, r in ipairs({ f.Scroll:GetRegions() }) do
     if r and r.GetObjectType and r:GetObjectType() == "Texture" then
+---@diagnostic disable-next-line: undefined-field
       if r.SetTexture then r:SetTexture(nil) end
       if r.SetAlpha then r:SetAlpha(0) end
       if r.Hide then r:Hide() end

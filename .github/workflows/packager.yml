@@ -23,9 +23,9 @@ jobs:
     # If these secrets exist, the addon will also upload to those sites
     env:
       GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}   # Required for GitHub releases
-      CF_API_KEY: ${{ secrets.CF_API_KEY }}       # Optional: upload to CurseForge
-      WOWI_API_TOKEN: ${{ secrets.WOWI_API_TOKEN }}  # Optional: upload to WoWInterface
-      WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}  # Optional: upload to Wago
+      # CF_API_KEY: ${{ secrets.CF_API_KEY }}       # Optional: upload to CurseForge
+      # WOWI_API_TOKEN: ${{ secrets.WOWI_API_TOKEN }}  # Optional: upload to WoWInterface
+      # WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}  # Optional: upload to Wago
 
     steps:
 

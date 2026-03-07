@@ -10,8 +10,10 @@ local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
 
 local professionsTried = false
 local function EnsureProfessionsLoaded()
+---@diagnostic disable-next-line: undefined-global
   if not professionsTried and type(LoadAddOn) == "function" and not (C_TradeSkillUI and C_TradeSkillUI.GetRecipeSchematic) then
     professionsTried = true
+---@diagnostic disable-next-line: undefined-global
     pcall(LoadAddOn, "Blizzard_Professions")
   end
   return (C_TradeSkillUI and C_TradeSkillUI.GetRecipeSchematic) and true or false

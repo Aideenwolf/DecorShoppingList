@@ -1,21 +1,21 @@
 package-as: DecorShoppingList
+enable-nolib-creation: no
+
+ignore: # Files and directories beginning with a dot (such as .git) are automatically ignored, as is the pgkmeta file itself.
+    - .vscode/
+    - .github/
+
+# Mine
 
 externals:
-  libs/Ace3:
-    url: https://github.com/ace3/ace3
-    tag: latest
+  libs/Ace3: https://repos.wowace.com/wow/ace3/trunk
 
-  libs/LibStub:
-    url: https://repos.wowace.com/wow/libstub/trunk
+  libs/LibStub: https://repos.wowace.com/wow/libstub/trunk
 
-  libs/LibPeriodicTable-3.1:
-    url: https://repos.wowace.com/wow/periodictable-3-1/trunk
+  libs/LibPeriodicTable-3.1: https://repos.wowace.com/wow/periodictable-3-1/trunk
 
-  libs/LibDataBroker-1.1:
-    url: https://repos.wowace.com/wow/libdatabroker-1-1/trunk
+  libs/LibDataBroker-1.1: https://repos.wowace.com/wow/libdatabroker-1-1/trunk
 
-  libs/LibSharedMedia-3.0:
-    url: https://repos.wowace.com/wow/libsharedmedia-3-0/trunk
+  libs/LibSharedMedia-3.0: https://repos.wowace.com/wow/libsharedmedia-3-0/trunk
 
-  libs/LibDBIcon-1.0:
-    url: https://repos.wowace.com/wow/libdbicon-1-0/trunk
+  libs/LibDBIcon-1.0: https://repos.wowace.com/wow/libdbicon-1-0/trunk

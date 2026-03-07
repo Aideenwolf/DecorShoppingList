@@ -15,6 +15,11 @@ plugins/Homebound.lua
 plugins/Example.lua
 plugins/Template.lua
 
+modules/sorting.lua
+modules/reagents.lua
+modules/recipes.lua
+modules/snapshots.lua
+
 Data.lua
 Config.lua
 ListWindow.lua

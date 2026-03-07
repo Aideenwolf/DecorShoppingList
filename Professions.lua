@@ -192,8 +192,15 @@ RefreshTrackWidget = function(addon)
   local selectedChanged = (w._dslLastRecipeID ~= rid)
   w._dslLastRecipeID = rid
 
-  if selectedChanged or (not (w.Qty.HasFocus and w.Qty:HasFocus())) then
+  if selectedChanged then
+    w._dslDraftQty = nil
     w.Qty:SetNumber(cur)
+  elseif not (w.Qty.HasFocus and w.Qty:HasFocus()) then
+    if w._dslDraftQty ~= nil then
+      w.Qty:SetNumber(w._dslDraftQty)
+    else
+      w.Qty:SetNumber(cur)
+    end
   end
 
   if w.Track and w.Track.SetText then
@@ -392,10 +399,36 @@ local function makeTrackWidget(parent, addon)
     return n
   end
 
+  local function readDraftQty()
+    local n = getQtyAllowZero()
+    if n == nil then
+      w._dslDraftQty = nil
+      return nil
+    end
+    w._dslDraftQty = n
+    return n
+  end
+
   -- Works in both normal and linked mode.
+  w.Qty:SetScript("OnTextChanged", function(_, userInput)
+    if not userInput then return end
+    readDraftQty()
+  end)
+  w.Qty:SetScript("OnEditFocusLost", function()
+    local n = readDraftQty()
+    if n ~= nil then
+      w.Qty:SetNumber(n)
+    end
+  end)
+  w.Qty:SetScript("OnEnterPressed", function()
+    w.Track:Click()
+  end)
 
   w.Track:SetScript("OnClick", function()
-    local q = getQtyAllowZero()
+    local q = w._dslDraftQty
+    if q == nil then
+      q = getQtyAllowZero()
+    end
     if q == nil then addon:Print(L["INVALID_QTY"]); return end
 
     local rid = GetSelectedRecipeID()
@@ -406,6 +439,7 @@ local function makeTrackWidget(parent, addon)
     if delta == 0 then return end
 
     ns.SetGoalForRecipe(addon, rid, delta)
+    w._dslDraftQty = nil
     RefreshTrackWidget(addon)
   end)
 
@@ -446,4 +480,3 @@ function ns.InitProfessions(addon)
     addon:ScheduleTimer(tryAttach, 5.0)
   end
 end
-

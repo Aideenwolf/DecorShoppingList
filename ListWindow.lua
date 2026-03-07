@@ -1,9 +1,15 @@
--- ListWindow.lua
+﻿-- ListWindow.lua
 
 local _, ns = ...
 ns = ns or {}
 local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
-local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+local LSM
+local function GetLSM()
+  if not LSM and LibStub then
+    LSM = LibStub("LibSharedMedia-3.0", true)
+  end
+  return LSM
+end
 
 local ROWS_MAX = 60
 local ROW_H = 22
@@ -50,7 +56,8 @@ local function ApplyMediaTexture(tex, media)
     return
   end
 
-  local bgPath = (LSM and LSM:Fetch("background", media, true)) or "Interface\\Buttons\\WHITE8x8"
+  local lsm = GetLSM()
+  local bgPath = (lsm and lsm:Fetch("background", media, true)) or "Interface\\Buttons\\WHITE8x8"
   tex:SetTexture(bgPath)
   if tex.SetTexCoord then tex:SetTexCoord(0, 1, 0, 1) end
 end
@@ -166,6 +173,7 @@ function ns.InitListWindow(addon)
     local border = v.borderColor or { 0.75, 0.75, 0.78, 1 }
     local scroll = v.scrollbarColor or border
     local tabs = v.titleTabColor or { 0.20, 0.20, 0.22, 0.92 }
+    local buttons = v.buttonColor or tabs
 
     if v.showRoundedBorder == false then
       f:SetBackdrop({
@@ -192,12 +200,12 @@ function ns.InitListWindow(addon)
     if f.TitleBar then f.TitleBar:SetColorTexture(tabs[1] or 1, tabs[2] or 1, tabs[3] or 1, tabs[4] or 1) end
     if f.Divider then f.Divider:SetColorTexture(border[1] or 1, border[2] or 1, border[3] or 1, 0.7) end
 
-    TintButtonTextures(f.RecipesTab, tabs, 1)
-    TintButtonTextures(f.ReagentsTab, tabs, 1)
-    TintButtonTextures(f.SortN, tabs, 1)
-    TintButtonTextures(f.SortR, tabs, 1)
-    TintButtonTextures(f.SortE, tabs, 1)
-    TintButtonTextures(f.SortS, tabs, 1)
+    TintButtonTextures(f.RecipesTab, buttons, 1)
+    TintButtonTextures(f.ReagentsTab, buttons, 1)
+    TintButtonTextures(f.SortN, buttons, 1)
+    TintButtonTextures(f.SortR, buttons, 1)
+    TintButtonTextures(f.SortE, buttons, 1)
+    TintButtonTextures(f.SortS, buttons, 1)
     TintScrollBarTextures(f.Scroll and (f.Scroll.ScrollBar or f.Scroll.scrollBar), scroll)
   end
 
@@ -207,30 +215,29 @@ function ns.InitListWindow(addon)
   end
 
   f.Inset = CreateFrame("Frame", nil, f)
-  f.Inset:SetPoint("TOPLEFT", f, "TOPLEFT", 6, -26)
-  f.Inset:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -6, 6)
+  f.Inset:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  f.Inset:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  f.Inset:SetFrameStrata(f:GetFrameStrata())
+  f.Inset:SetFrameLevel(math.max(1, f:GetFrameLevel() - 1))
 
   local bgParent = f.Inset
-  f.BG = bgParent:CreateTexture(nil, "ARTWORK", nil, 7)
-  f.BG:SetDrawLayer("BACKGROUND", 1)
-  if bgParent == f.Inset then
-    f.BG:SetPoint("TOPLEFT", bgParent, "TOPLEFT", 4, -4)
-    f.BG:SetPoint("BOTTOMRIGHT", bgParent, "BOTTOMRIGHT", -4, 4)
-  else
-    f.BG:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -30)
-    f.BG:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 10)
-  end
+  f.BG = bgParent:CreateTexture(nil, "BACKGROUND", nil, -8)
+  f.BG:SetDrawLayer("BACKGROUND", -8)
+  f.BG:SetPoint("TOPLEFT", bgParent, "TOPLEFT", 0, 0)
+  f.BG:SetPoint("BOTTOMRIGHT", bgParent, "BOTTOMRIGHT", 0, 0)
   f.BG:SetBlendMode("BLEND")
 
-  f.TopBar = f:CreateTexture(nil, "ARTWORK", nil, -1)
-  f.TopBar:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -28)
-  f.TopBar:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -28)
+  f.TopBar = f:CreateTexture(nil, "BACKGROUND", nil, -1)
+  f.TopBar:SetPoint("TOPLEFT", f, "TOPLEFT", 1, -28)
+  f.TopBar:SetPoint("TOPRIGHT", f, "TOPRIGHT", -1, -28)
   f.TopBar:SetHeight(50)
+  f.TopBar:SetDrawLayer("BACKGROUND", -1)
 
-  f.TitleBar = f:CreateTexture(nil, "ARTWORK")
-  f.TitleBar:SetPoint("TOPLEFT", f, "TOPLEFT", 6, -6)
-  f.TitleBar:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
+  f.TitleBar = f:CreateTexture(nil, "BACKGROUND", nil, 0)
+  f.TitleBar:SetPoint("TOPLEFT", f, "TOPLEFT", 1, -1)
+  f.TitleBar:SetPoint("TOPRIGHT", f, "TOPRIGHT", -1, -1)
   f.TitleBar:SetHeight(20)
+  f.TitleBar:SetDrawLayer("BACKGROUND", 0)
   f.TitleBar:SetColorTexture(0.15, 0.15, 0.17, 0.95)
 
   f.Title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -281,7 +288,6 @@ function ns.InitListWindow(addon)
 
   -- Include alts checkbox
   f.Alts = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
-  f.Alts:ClearAllPoints()
   f.Alts:SetPoint("LEFT", f.ReagentsTab, "RIGHT", 12, 0)
   f.Alts.text:SetText(L["INCLUDE_ALTS"])
   f.Alts:SetChecked(addon.db.profile.includeAlts)
@@ -321,20 +327,18 @@ function ns.InitListWindow(addon)
     b:SetSize(24, 18)
     b:SetPoint("LEFT", f.SortBar, "LEFT", x, 0)
     b:SetText(letter)
-    b.letter = letter
-  b:SetScript("OnClick", function()
-    local view = addon.db.profile.window.view or "recipes"
-    if view == "recipes" then
-      addon.db.profile.window.recipeSort = letter
-    else
-      addon.db.profile.window.reagentSort = letter
-    end
-    addon:MarkDirty("display")
-  end)
+    b:SetScript("OnClick", function()
+      local view = addon.db.profile.window.view or "recipes"
+      if view == "recipes" then
+        addon.db.profile.window.recipeSort = letter
+      else
+        addon.db.profile.window.reagentSort = letter
+      end
+      addon:MarkDirty("display")
+    end)
 
-  return b
+    return b
   end
-
   f.SortN = makeSortBtn("N", 0)
   f.SortR = makeSortBtn("R", 26)
   f.SortE = makeSortBtn("E", 52)
@@ -397,10 +401,10 @@ function ns.InitListWindow(addon)
       row:SetPoint("TOP", f.Rows[i - 1], "BOTTOM", 0, 0)
     end
 
-    -- Icon + text
+    -- Icon + text, icon = profession icon or item icons
 	  row.StatusIcon = row:CreateTexture(nil, "ARTWORK")
 	  row.StatusIcon:SetSize(14, 14)
-	  row.StatusIcon:SetPoint("LEFT", row, "LEFT", 2, 0)
+	
 	  row.StatusIcon:Hide()
 
 	  row.Icon = row:CreateTexture(nil, "ARTWORK")
@@ -605,7 +609,8 @@ function ns.RefreshListWindow(addon)
   local visual = (ns.GetVisualSettings and ns.GetVisualSettings(addon)) or {}
   local textSize = tonumber(visual.textSize) or 10
   local fontName = visual.textFont or "Friz Quadrata TT"
-  local fontPath = (LSM and LSM:Fetch("font", fontName, true)) or STANDARD_TEXT_FONT
+  local lsm = GetLSM()
+  local fontPath = (lsm and lsm:Fetch("font", fontName, true)) or STANDARD_TEXT_FONT
   local fontFlags = (visual.textOutline == false) and "" or "OUTLINE"
   local cHeader = (visual.textColor and visual.textColor.header) or { 1, 0.82, 0, 1 }
 
@@ -614,7 +619,7 @@ function ns.RefreshListWindow(addon)
   f.Alts:SetChecked(addon.db.profile.includeAlts)
 
   -- Sort bar visible on Recipes + Reagents views
-  f.SortBar:SetShown(view == "reagents" or view == "recipes")
+  f.SortBar:Show()
 
   if view == "recipes" then
     -- Only N/E apply to recipes
@@ -744,11 +749,8 @@ function ns.RefreshListWindow(addon)
 
         row.Icon:ClearAllPoints()
         row.Icon:SetPoint("LEFT", row, "LEFT", 2 + ITEM_INDENT, 0)
-
         row.StatusIcon:ClearAllPoints()
-        row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -4, 0)
-
-        row.Name:ClearAllPoints()
+        row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -10, 0)
 
         -- Icon selection
         local tex

@@ -1,4 +1,4 @@
--- DecorShoppingList/Data.lua
+﻿-- DecorShoppingList/Data.lua
 local ADDON, ns = ...
 ns = ns or {}
 
@@ -147,7 +147,7 @@ local function GetReagentSource(addon, itemID)
     return "Crafting", nil
   end
 
-  -- Force "* Lumber" items into Gathering → Lumbering
+  -- Force "* Lumber" items into Gathering â†’ Lumbering
   do
     local name = GetItemNameFast(itemID)
     if name and name:match(" Lumber$") then
@@ -1513,7 +1513,9 @@ function ns.RecomputeCaches(addon)
 		  local profName = NormalizeProfessionName(goal.profession)
 		  if not profName or profName == "Unknown" then
 			profName = MemoProfName(goal.recipeID)
-			goal.profession = profName
+			if profName and profName ~= "" and profName ~= "Unknown" then
+			  goal.profession = profName
+			end
 		  end
 
 		  local hasProf = (profName and profName ~= "Unknown") and MemoHasProf(profName) or false
@@ -1556,9 +1558,7 @@ function ns.RecomputeCaches(addon)
           end
         end
 
-        if not goal.profession or goal.profession == "" then
-          goal.profession = "Unknown"
-        end
+        -- Keep saved profession sticky; do not overwrite with "Unknown" during transient API misses.
 
         local itemID = goal.itemID
         if goal.recipeID and not itemID then
@@ -1569,7 +1569,7 @@ function ns.RecomputeCaches(addon)
         local name = GetRecipeDisplayName(goal)
         local rarity = (goal.itemID and MemoQuality(goal.itemID)) or -1
         local prof = NormalizeProfessionName(goal.profession) or "Unknown"
-        goal.profession = prof
+        if prof ~= "Unknown" then goal.profession = prof end
 
 		local expacID = itemID and MemoExpacID(itemID) or nil
 		local expacName = MemoExpacName(expacID)
@@ -2075,3 +2075,4 @@ function ns.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, depth)
     end
   end
 end
+

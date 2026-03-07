@@ -1,4 +1,4 @@
--- DecorShoppingList/Professions.lua
+﻿-- DecorShoppingList/Professions.lua
 local ADDON, ns = ...
 ns = ns or {}
 
@@ -373,7 +373,7 @@ local function makeTrackWidget(parent, addon)
   -- Qty
   w.Qty = CreateFrame("EditBox", nil, w, "InputBoxTemplate")
   w.Qty:SetSize(44, 24)
-  w.Qty:SetPoint("LEFT", w, "LEFT", 0, 0)
+  w.Qty:SetPoint("LEFT", w, "LEFT", -5, 0)
   w.Qty:SetAutoFocus(false)
   w.Qty:SetNumeric(true)
   w.Qty:SetNumber(0)
@@ -381,7 +381,7 @@ local function makeTrackWidget(parent, addon)
   -- Track (apply qty)
   w.Track = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
   w.Track:SetSize(70, 24)
-  w.Track:SetPoint("LEFT", w.Qty, "RIGHT", 6, 0)
+  w.Track:SetPoint("LEFT", w.Qty, "RIGHT", 1, 0)
   SetTrackButtonText(w.Track, 0)
 
   local function getQtyAllowZero()
@@ -453,3 +453,4 @@ function ns.InitProfessions(addon)
     addon:ScheduleTimer(function() tryAttach() end, 5.0)
   end
 end
+

@@ -1,8 +1,14 @@
--- Config.lua
+﻿-- Config.lua
 local _, ns = ...
 ns = ns or {}
 
-local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+local LSM
+local function GetLSM()
+  if not LSM and LibStub then
+    LSM = LibStub("LibSharedMedia-3.0", true)
+  end
+  return LSM
+end
 local WHITE8 = "Interface\\Buttons\\WHITE8x8"
 local DIALOG_BORDER = "Interface\\DialogFrame\\UI-DialogBox-Border"
 local COLOR_SECTION = { 1, 0.82, 0, 1 }
@@ -33,13 +39,13 @@ end
 
 local function applyMediaTexture(tex, media)
   if not tex then return end
-  if media == "Solid" then
-    tex:SetTexture(WHITE8)
-    if tex.SetTexCoord then tex:SetTexCoord(0, 1, 0, 1) end
-    return
+
+  local path = WHITE8
+  if media ~= "Solid" then
+    local lsm = GetLSM()
+    path = (lsm and lsm:Fetch("background", media, true)) or WHITE8
   end
 
-  local path = (LSM and LSM:Fetch("background", media, true)) or WHITE8
   tex:SetTexture(path)
   if tex.SetTexCoord then tex:SetTexCoord(0, 1, 0, 1) end
 end
@@ -75,7 +81,8 @@ local function setDropdown(frame, width, buildFn, selectedName)
 end
 
 local function getFontNames(defaultName)
-  local names = (LSM and LSM.List and LSM:List("font")) or {}
+  local lsm = GetLSM()
+  local names = (lsm and lsm.List and lsm:List("font")) or {}
   if #names == 0 then
     names = { defaultName or "Friz Quadrata TT" }
   end
@@ -83,14 +90,14 @@ local function getFontNames(defaultName)
 end
 
 local function getBackgroundNames()
-  local names = (LSM and LSM.List and LSM:List("background")) or {}
+  local lsm = GetLSM()
+  local names = (lsm and lsm.List and lsm:List("background")) or {}
   local out = { "Solid" }
   for _, n in ipairs(names) do
     if n ~= "Solid" then
       table.insert(out, n)
     end
   end
-  if #out == 0 then out = { "Solid" } end
   return out
 end
 
@@ -112,6 +119,11 @@ function ns.GetVisualSettings(addon)
   v.backgroundColor = ensureColor(v.backgroundColor)
   v.scrollbarColor = ensureColor(v.scrollbarColor)
   v.titleTabColor = ensureColor(v.titleTabColor)
+
+  if type(v.buttonColor) ~= "table" then
+    v.buttonColor = { v.titleTabColor[1], v.titleTabColor[2], v.titleTabColor[3], v.titleTabColor[4] }
+  end
+  v.buttonColor = ensureColor(v.buttonColor)
 
   v.showRoundedBorder = (v.showRoundedBorder ~= false)
   v.backgroundMedia = v.backgroundMedia or "Solid"
@@ -175,7 +187,7 @@ local function openColorPicker(color, onChanged, allowAlpha)
     g = prev.g,
     b = prev.b,
     opacity = prev.a,
-    hasOpacity = allowAlpha and true or false,
+    hasOpacity = allowAlpha,
     swatchFunc = applyColor,
     opacityFunc = allowAlpha and applyAlpha or nil,
     cancelFunc = function()
@@ -249,6 +261,10 @@ local function buildConfigWindow(addon)
   f.SectionLabels = {}
   f.FieldLabels = {}
 
+  local function onVisualChanged()
+    refreshVisuals(addon)
+  end
+
   local function addSectionLabel(text, x, yy)
     local fs = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fs:SetPoint("TOPLEFT", f, "TOPLEFT", x, yy)
@@ -276,7 +292,7 @@ local function buildConfigWindow(addon)
   setFontStringColor(f.Outline.text, COLOR_FIELD)
   f.Outline:SetScript("OnClick", function(self)
     local v = ns.GetVisualSettings(addon)
-    v.textOutline = self:GetChecked() and true or false
+    v.textOutline = not not self:GetChecked()
     refreshVisuals(addon)
   end)
   y = y - 30
@@ -309,36 +325,27 @@ local function buildConfigWindow(addon)
   y = y - 64
 
   addFieldLabel("Header Color", left + 20, y)
-  f.HeaderColor = makeColorButton(f, left, y + 2, v.textColor.header, function()
-    refreshVisuals(addon)
-  end)
+  f.HeaderColor = makeColorButton(f, left, y + 2, v.textColor.header, onVisualChanged)
   y = y - 38
 
   addSectionLabel("Settings", left, y)
   y = y - 24
 
   addFieldLabel("Border Color", left + 20, y)
-  f.BorderColor = makeColorButton(f, left, y + 2, v.borderColor, function()
-    refreshVisuals(addon)
-  end)
+  f.BorderColor = makeColorButton(f, left, y + 2, v.borderColor, onVisualChanged, true)
   y = y - 26
 
   addFieldLabel("Background Color", left + 20, y)
-  f.BackgroundColor = makeColorButton(f, left, y + 2, v.backgroundColor, function()
-    refreshVisuals(addon)
-  end, true)
+  f.BackgroundColor = makeColorButton(f, left, y + 2, v.backgroundColor, onVisualChanged, true)
   y = y - 26
 
-  addFieldLabel("Scroll Bar Color", left + 20, y)
-  f.ScrollbarColor = makeColorButton(f, left, y + 2, v.scrollbarColor, function()
-    refreshVisuals(addon)
-  end)
-  y = y - 26
 
   addFieldLabel("Title Tabs Color", left + 20, y)
-  f.TitleTabColor = makeColorButton(f, left, y + 2, v.titleTabColor, function()
-    refreshVisuals(addon)
-  end)
+  f.TitleTabColor = makeColorButton(f, left, y + 2, v.titleTabColor, onVisualChanged, true)
+  y = y - 26
+
+  addFieldLabel("Button Color", left + 20, y)
+  f.ButtonColor = makeColorButton(f, left, y + 2, v.buttonColor, onVisualChanged, true)
   y = y - 30
 
   f.Rounded = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
@@ -347,7 +354,7 @@ local function buildConfigWindow(addon)
   setFontStringColor(f.Rounded.text, COLOR_FIELD)
   f.Rounded:SetScript("OnClick", function(self)
     local v = ns.GetVisualSettings(addon)
-    v.showRoundedBorder = self:GetChecked() and true or false
+    v.showRoundedBorder = not not self:GetChecked()
     refreshVisuals(addon)
   end)
   y = y - 34
@@ -395,11 +402,12 @@ function ns.ShowConfigWindow(addon, show)
   setDropdown(f.FontDrop, 255, function(self, level)
     local names = getFontNames(v.textFont)
     for _, name in ipairs(names) do
+      local selectedName = name
       local info = UIDropDownMenu_CreateInfo()
-      info.text = name
+      info.text = selectedName
       info.func = function()
-        v.textFont = name
-        UIDropDownMenu_SetSelectedName(f.FontDrop, name)
+        v.textFont = selectedName
+        UIDropDownMenu_SetSelectedName(f.FontDrop, selectedName)
         refreshVisuals(addon)
       end
       UIDropDownMenu_AddButton(info, level)
@@ -409,11 +417,12 @@ function ns.ShowConfigWindow(addon, show)
   setDropdown(f.BgDrop, 255, function(self, level)
     local out = getBackgroundNames()
     for _, name in ipairs(out) do
+      local selectedName = name
       local info = UIDropDownMenu_CreateInfo()
-      info.text = name
+      info.text = selectedName
       info.func = function()
-        v.backgroundMedia = name
-        UIDropDownMenu_SetSelectedName(f.BgDrop, name)
+        v.backgroundMedia = selectedName
+        UIDropDownMenu_SetSelectedName(f.BgDrop, selectedName)
         refreshVisuals(addon)
       end
       UIDropDownMenu_AddButton(info, level)
@@ -422,9 +431,10 @@ function ns.ShowConfigWindow(addon, show)
 
   refreshVisuals(addon)
 
-  if show == false then
-    f:Hide()
-  else
-    f:Show()
-  end
+  f:SetShown(show ~= false)
 end
+
+
+
+
+

@@ -14,7 +14,9 @@ local function GetCharEntry(addon)
   local g = addon.db.global.realms
   g[realm] = g[realm] or { chars = {} }
   g[realm].chars[key] = g[realm].chars[key] or {
-    items = {}, bags = {}, bank = {}, warbank = {}, recipes = {}, profs = {}, lastSeen = 0
+    items = {}, bags = {}, bank = {}, warbank = {},
+    bagsByQuality = {}, bankByQuality = {}, warbankByQuality = {},
+    recipes = {}, profs = {}, lastSeen = 0
   }
 
   local entry = g[realm].chars[key]
@@ -22,6 +24,9 @@ local function GetCharEntry(addon)
   entry.bags = entry.bags or {}
   entry.bank = entry.bank or {}
   entry.warbank = entry.warbank or {}
+  entry.bagsByQuality = entry.bagsByQuality or {}
+  entry.bankByQuality = entry.bankByQuality or {}
+  entry.warbankByQuality = entry.warbankByQuality or {}
   entry.recipes = entry.recipes or {}
   entry.profs = entry.profs or {}
   entry.lastSeen = entry.lastSeen or 0
@@ -200,7 +205,14 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
     dest[itemID] = (dest[itemID] or 0) + count
   end
 
-  local function scanBag(bagID, dest)
+  local function addQualityCount(dest, itemID, quality, count)
+    quality = ns.Data.NormalizeTrackedQuality(quality)
+    if not (dest and itemID and quality and count and count > 0) then return end
+    dest[itemID] = dest[itemID] or {}
+    dest[itemID][quality] = (dest[itemID][quality] or 0) + count
+  end
+
+  local function scanBag(bagID, dest, destByQuality)
     if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then return end
     local ok, slots = pcall(C_Container.GetContainerNumSlots, bagID)
     if not ok or type(slots) ~= "number" or slots <= 0 then return end
@@ -209,6 +221,7 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
       local info = C_Container.GetContainerItemInfo(bagID, slot)
       if info and info.itemID and info.stackCount then
         addCount(dest, info.itemID, info.stackCount)
+        addQualityCount(destByQuality, info.itemID, ns.Data.GetTrackedQualityFromContainerItem(bagID, slot, info), info.stackCount)
       end
     end
   end
@@ -229,19 +242,21 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
   end
 
   entry.bags = {}
+  entry.bagsByQuality = {}
   for bag = 0, 4 do
-    scanBag(bag, entry.bags)
+    scanBag(bag, entry.bags, entry.bagsByQuality)
   end
-  scanBag(5, entry.bags)
+  scanBag(5, entry.bags, entry.bagsByQuality)
 
   local bankOpen = (BankFrame and BankFrame:IsShown()) or (ReagentBankFrame and ReagentBankFrame:IsShown())
   if bankOpen then
     entry.bank = {}
-    scanBag(-1, entry.bank)
+    entry.bankByQuality = {}
+    scanBag(-1, entry.bank, entry.bankByQuality)
     for bag = 6, 12 do
-      scanBag(bag, entry.bank)
+      scanBag(bag, entry.bank, entry.bankByQuality)
     end
-    scanBag(-3, entry.bank)
+    scanBag(-3, entry.bank, entry.bankByQuality)
   end
 
   local warbankOpen = false
@@ -254,8 +269,9 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
     local tabBagIDs = GetAccountBankTabBagIDs()
     if #tabBagIDs > 0 then
       entry.warbank = {}
+      entry.warbankByQuality = {}
       for _, bagID in ipairs(tabBagIDs) do
-        scanBag(bagID, entry.warbank)
+        scanBag(bagID, entry.warbank, entry.warbankByQuality)
       end
     end
   end

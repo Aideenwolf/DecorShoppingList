@@ -471,6 +471,47 @@ function ns.InitListWindow(addon)
             GameTooltip:AddLine(" ")
             GameTooltip:SetItemByID(outID)
           end
+
+          local goal = ns.Recipes and ns.Recipes.GetGoalForRecipe and ns.Recipes.GetGoalForRecipe(addon, self.data.recipeID) or nil
+          if goal and outID then
+            local qualityMode, targetQuality = ns.Recipes.GetGoalQualityTracking(goal)
+            local have = ns.Recipes.GetTrackedHaveCount(addon, goal, outID)
+            local breakdown = ns.Recipes.GetGoalQualityBreakdown(addon, goal, outID)
+            GameTooltip:AddLine(" ")
+
+            if qualityMode == "specific" and targetQuality then
+              local qualityLabel = ns.Data.GetTrackedQualityLabel(targetQuality) or tostring(targetQuality)
+              GameTooltip:AddDoubleLine(
+                L["QUALITY"] or "Quality",
+                string.format("%s (%d)", qualityLabel, have or 0),
+                1, 1, 1, 1, 0.82, 0
+              )
+              GameTooltip:AddLine(
+                string.format(
+                  "%s %d | %s %d | %s %d",
+                  ns.Data.GetTrackedQualityLabel(1) or "Bronze", breakdown[1] or 0,
+                  ns.Data.GetTrackedQualityLabel(2) or "Silver", breakdown[2] or 0,
+                  ns.Data.GetTrackedQualityLabel(3) or "Gold", breakdown[3] or 0
+                ),
+                0.7, 0.7, 0.7
+              )
+            else
+              GameTooltip:AddDoubleLine(
+                L["QUALITY"] or "Quality",
+                string.format(
+                  "%s (%d) | %s (%d) | %s (%d)",
+                  ns.Data.GetTrackedQualityLabel(1) or "Bronze", breakdown[1] or 0,
+                  ns.Data.GetTrackedQualityLabel(2) or "Silver", breakdown[2] or 0,
+                  ns.Data.GetTrackedQualityLabel(3) or "Gold", breakdown[3] or 0
+                ),
+                1, 1, 1, 0.9, 0.9, 0.9
+              )
+            end
+
+            GameTooltip:AddDoubleLine(L["HAVE"], tostring(have or 0), 1, 1, 1, 1, 1, 1)
+            GameTooltip:AddDoubleLine(L["NEED"], tostring(goal.qty or self.data.need or 0), 1, 1, 1, 1, 1, 1)
+            GameTooltip:AddDoubleLine(L["REMAINING"], tostring(goal.remaining or self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
+          end
         end
       end
 

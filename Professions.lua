@@ -30,6 +30,32 @@ end
 -- Tracks the last recipe the player viewed/selected in any professions UI (normal or linked)
 local currentRecipeID = nil
 local RefreshTrackWidget
+local QUALITY_ATLAS_CANDIDATES = {
+  [1] = { "Professions-Icon-Quality-Tier1-Small", "Professions-Icon-Quality-Tier1" },
+  [2] = { "Professions-Icon-Quality-Tier2-Small", "Professions-Icon-Quality-Tier2" },
+  [3] = { "Professions-Icon-Quality-Tier3-Small", "Professions-Icon-Quality-Tier3" },
+}
+local QUALITY_ACCENT = {
+  [1] = { 0.78, 0.54, 0.30 },
+  [2] = { 0.78, 0.78, 0.82 },
+  [3] = { 1.00, 0.82, 0.20 },
+}
+
+local function GetCurrentTrackedGoal(addon, recipeID)
+  return ns.Recipes and ns.Recipes.GetGoalForRecipe and ns.Recipes.GetGoalForRecipe(addon, recipeID) or nil
+end
+
+local function GetGoalQualityTracking(goal)
+  if ns.Recipes and ns.Recipes.GetGoalQualityTracking then
+    return ns.Recipes.GetGoalQualityTracking(goal)
+  end
+  return "any", nil
+end
+
+local function GetRecipeOutputItemID(recipeID)
+  if not recipeID then return nil end
+  return ns.GetRecipeOutputItemID and ns.GetRecipeOutputItemID(recipeID) or nil
+end
 
 local function SetTrackButtonText(btn, qty)
   if not (btn and btn.SetText) then return end
@@ -49,17 +75,114 @@ local function PositionTrackWidget(sf, w)
       or (_G.TradeSkillFrame and _G.TradeSkillFrame.CreateButton)
 
   if createBtn then
-    w:SetPoint("BOTTOM", createBtn, "TOP", 0, 8)
+    if w.Track then
+      w:SetPoint("BOTTOMRIGHT", createBtn, "TOPRIGHT", 0, 8)
+    else
+      w:SetPoint("BOTTOM", createBtn, "TOP", 0, 8)
+    end
   else
-    w:SetPoint("BOTTOM", sf, "BOTTOM", 0, 12)
+    if w.Track then
+      w:SetPoint("BOTTOMRIGHT", sf, "BOTTOMRIGHT", -12, 12)
+    else
+      w:SetPoint("BOTTOM", sf, "BOTTOM", 0, 12)
+    end
   end
 end
 
 local function GetCurrentTrackedQty(addon, recipeID)
-  local goals = addon and addon.db and addon.db.profile and addon.db.profile.goals
-  if not goals or not recipeID then return 0 end
-  local g = goals["r:" .. tostring(recipeID)]
+  local g = GetCurrentTrackedGoal(addon, recipeID)
   return (type(g) == "table" and tonumber(g.qty)) or 0
+end
+
+local function UpdateQualityButtons(w)
+  if not (w and w.QualityButtons) then return end
+
+  local enabled = (w._dslQualityEnabled == true)
+  for quality, button in ipairs(w.QualityButtons) do
+    if button.SetEnabled then
+      button:SetEnabled(enabled)
+    end
+    if enabled and quality == w._dslDraftTargetQuality then
+      button:LockHighlight()
+      if button.Selected then
+        local color = QUALITY_ACCENT[quality] or QUALITY_ACCENT[3]
+        button.Selected:SetVertexColor(color[1], color[2], color[3], 0.22)
+        button.Selected:Show()
+      end
+    else
+      button:UnlockHighlight()
+      if button.Selected then
+        button.Selected:Hide()
+      end
+    end
+
+    if button.Icon then
+      button.Icon:SetAlpha(enabled and 1 or 0.45)
+    end
+  end
+
+  if w.QualityCheck then
+    w.QualityCheck:SetChecked(enabled)
+  end
+end
+
+local function ApplyQualityButtonArt(button, quality)
+  if not button then return end
+
+  local icon = button.Icon
+  local atlasApplied = false
+  if icon and icon.SetAtlas then
+    for _, atlas in ipairs(QUALITY_ATLAS_CANDIDATES[quality] or {}) do
+      if icon:SetAtlas(atlas, true) then
+        atlasApplied = true
+        break
+      end
+    end
+  end
+
+  if atlasApplied then
+    button:SetText("")
+    icon:Show()
+  else
+    button:SetText(tostring(quality))
+    if icon then
+      icon:Hide()
+    end
+  end
+end
+
+local function SyncQualityControls(w, recipeID, goal)
+  local itemID = (type(goal) == "table" and goal.itemID) or GetRecipeOutputItemID(recipeID)
+  local isDecor = itemID and ns.Data.IsDecorItem(itemID) or false
+  local qualityMode, targetQuality = GetGoalQualityTracking(goal)
+
+  if w._dslDraftUseQuality == nil then
+    w._dslDraftUseQuality = (qualityMode == "specific")
+  end
+  if w._dslDraftTargetQuality == nil then
+    w._dslDraftTargetQuality = targetQuality or 3
+  end
+
+  if isDecor then
+    w._dslDraftUseQuality = false
+  end
+
+  w._dslDraftTargetQuality = ns.Data.NormalizeTrackedQuality(w._dslDraftTargetQuality) or 3
+  w._dslQualityEnabled = (not isDecor) and (w._dslDraftUseQuality == true)
+
+  if w.QualityCheck then
+    w.QualityCheck:SetEnabled(not isDecor)
+  end
+
+  if w.QualityLabel then
+    if isDecor then
+      w.QualityLabel:SetText(L["DECOR_ANY_QUALITY"] or "Decor item: any quality")
+    else
+      w.QualityLabel:SetText(L["USE_REAGENT_QUALITY"] or "Use Reagent Quality")
+    end
+  end
+
+  UpdateQualityButtons(w)
 end
 
 -- -------------------------
@@ -191,9 +314,12 @@ RefreshTrackWidget = function(addon)
   local cur = GetCurrentTrackedQty(addon, rid)
   local selectedChanged = (w._dslLastRecipeID ~= rid)
   w._dslLastRecipeID = rid
+  local goal = GetCurrentTrackedGoal(addon, rid)
 
   if selectedChanged then
     w._dslDraftQty = nil
+    w._dslDraftUseQuality = nil
+    w._dslDraftTargetQuality = nil
     w.Qty:SetNumber(cur)
   elseif not (w.Qty.HasFocus and w.Qty:HasFocus()) then
     if w._dslDraftQty ~= nil then
@@ -206,6 +332,8 @@ RefreshTrackWidget = function(addon)
   if w.Track and w.Track.SetText then
     SetTrackButtonText(w.Track, cur)
   end
+
+  SyncQualityControls(w, rid, goal)
 end
 
 local function IsAnyProfessionUIOpen()
@@ -375,21 +503,78 @@ end
 
 local function makeTrackWidget(parent, addon)
   local w = CreateFrame("Frame", nil, parent)
-  w:SetSize(140, 26)
-
-  -- Qty
-  w.Qty = CreateFrame("EditBox", nil, w, "InputBoxTemplate")
-  w.Qty:SetSize(44, 24)
-  w.Qty:SetPoint("LEFT", w, "LEFT", -5, 0)
-  w.Qty:SetAutoFocus(false)
-  w.Qty:SetNumeric(true)
-  w.Qty:SetNumber(0)
+  w:SetSize(500, 26)
 
   -- Track (apply qty)
   w.Track = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
   w.Track:SetSize(70, 24)
-  w.Track:SetPoint("LEFT", w.Qty, "RIGHT", 1, 0)
+  w.Track:SetPoint("RIGHT", w, "RIGHT", 0, 0)
   SetTrackButtonText(w.Track, 0)
+
+  -- Qty
+  w.Qty = CreateFrame("EditBox", nil, w, "InputBoxTemplate")
+  w.Qty:SetSize(44, 24)
+  w.Qty:SetPoint("RIGHT", w.Track, "LEFT", -4, 0)
+  w.Qty:SetAutoFocus(false)
+  w.Qty:SetNumeric(true)
+  w.Qty:SetNumber(0)
+
+  w.QualityCheck = CreateFrame("CheckButton", nil, w, "UICheckButtonTemplate")
+  w.QualityCheck:SetPoint("LEFT", w, "LEFT", -6, 0)
+
+  w.QualityLabel = w:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  w.QualityLabel:SetPoint("LEFT", w.QualityCheck, "RIGHT", -2, 0)
+  w.QualityLabel:SetJustifyH("LEFT")
+  w.QualityLabel:SetText(L["USE_REAGENT_QUALITY"] or "Use Reagent Quality")
+
+  w.QualityButtons = {}
+  for quality = 1, 3 do
+    local b = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
+    b:SetSize(28, 20)
+    b.Icon = b:CreateTexture(nil, "ARTWORK")
+    b.Icon:SetPoint("CENTER", b, "CENTER", 0, 0)
+    b.Icon:SetSize(16, 16)
+    b.Selected = b:CreateTexture(nil, "BACKGROUND")
+    b.Selected:SetTexture("Interface\\Buttons\\WHITE8X8")
+    b.Selected:SetPoint("TOPLEFT", b, "TOPLEFT", 3, -3)
+    b.Selected:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -3, 3)
+    b.Selected:Hide()
+    ApplyQualityButtonArt(b, quality)
+    b:SetScript("OnClick", function()
+      w._dslDraftTargetQuality = quality
+      UpdateQualityButtons(w)
+    end)
+    b:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:AddLine(ns.Data.GetTrackedQualityLabel(quality) or tostring(quality), 1, 1, 1)
+      GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function()
+      GameTooltip:Hide()
+    end)
+    w.QualityButtons[quality] = b
+  end
+
+  w.QualityButtons[1]:ClearAllPoints()
+  w.QualityButtons[2]:ClearAllPoints()
+  w.QualityButtons[3]:ClearAllPoints()
+  w.QualityButtons[3]:SetPoint("RIGHT", w.Qty, "LEFT", -8, 0)
+  w.QualityButtons[2]:SetPoint("RIGHT", w.QualityButtons[3], "LEFT", -2, 0)
+  w.QualityButtons[1]:SetPoint("RIGHT", w.QualityButtons[2], "LEFT", -2, 0)
+
+  w.QualityLabel:ClearAllPoints()
+  w.QualityLabel:SetPoint("RIGHT", w.QualityButtons[1], "LEFT", -8, 0)
+  w.QualityCheck:ClearAllPoints()
+  w.QualityCheck:SetPoint("RIGHT", w.QualityLabel, "LEFT", 0, 0)
+
+  w.QualityCheck:SetScript("OnClick", function(self)
+    w._dslDraftUseQuality = self:GetChecked() and true or false
+    if w._dslDraftUseQuality and not ns.Data.NormalizeTrackedQuality(w._dslDraftTargetQuality) then
+      w._dslDraftTargetQuality = 3
+    end
+    w._dslQualityEnabled = w._dslDraftUseQuality == true
+    UpdateQualityButtons(w)
+  end)
 
   local function getQtyAllowZero()
     local n = tonumber(w.Qty:GetText() or "")
@@ -434,11 +619,23 @@ local function makeTrackWidget(parent, addon)
     local rid = GetSelectedRecipeID()
     if not rid then addon:Print(L["NO_RECIPE_SELECTED"]); return end
 
+    local goal = GetCurrentTrackedGoal(addon, rid)
     local cur = GetCurrentTrackedQty(addon, rid)
     local delta = q - cur
-    if delta == 0 then return end
+    local itemID = (goal and goal.itemID) or GetRecipeOutputItemID(rid)
+    local isDecor = itemID and ns.Data.IsDecorItem(itemID) or false
+    local qualityMode = (not isDecor and w._dslDraftUseQuality) and "specific" or "any"
+    local targetQuality = (qualityMode == "specific") and (ns.Data.NormalizeTrackedQuality(w._dslDraftTargetQuality) or 3) or nil
+    local prevMode, prevTarget = GetGoalQualityTracking(goal)
 
-    ns.SetGoalForRecipe(addon, rid, delta)
+    if delta == 0 and prevMode == qualityMode and prevTarget == targetQuality then
+      return
+    end
+
+    ns.SetGoalForRecipe(addon, rid, delta, {
+      qualityMode = qualityMode,
+      targetQuality = targetQuality,
+    })
     w._dslDraftQty = nil
     RefreshTrackWidget(addon)
   end)

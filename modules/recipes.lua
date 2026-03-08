@@ -4,6 +4,70 @@ local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
 
 ns.Recipes = ns.Recipes or {}
 
+local QUALITY_MODE_ANY = "any"
+local QUALITY_MODE_SPECIFIC = "specific"
+
+local function NormalizeGoalQualityTracking(goal)
+  if type(goal) ~= "table" then
+    return QUALITY_MODE_ANY, nil
+  end
+
+  local targetQuality = ns.Data.NormalizeTrackedQuality(goal.targetQuality)
+  if goal.qualityMode == QUALITY_MODE_SPECIFIC and targetQuality then
+    return QUALITY_MODE_SPECIFIC, targetQuality
+  end
+
+  return QUALITY_MODE_ANY, nil
+end
+
+local function SetGoalQualityTracking(goal, qualityMode, targetQuality)
+  if type(goal) ~= "table" then return end
+
+  targetQuality = ns.Data.NormalizeTrackedQuality(targetQuality)
+  if qualityMode == QUALITY_MODE_SPECIFIC and targetQuality then
+    goal.qualityMode = QUALITY_MODE_SPECIFIC
+    goal.targetQuality = targetQuality
+    return
+  end
+
+  goal.qualityMode = QUALITY_MODE_ANY
+  goal.targetQuality = nil
+end
+
+local function GetGoalDisplayName(name, goal)
+  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+  if qualityMode ~= QUALITY_MODE_SPECIFIC or not targetQuality then
+    return name
+  end
+
+  local label = ns.Data.GetTrackedQualityLabel(targetQuality)
+  if not label or label == "" then
+    return name
+  end
+
+  return string.format("%s [%s]", tostring(name or ""), label)
+end
+
+local function GetTrackedHaveCount(addon, goal, itemID)
+  itemID = itemID or (type(goal) == "table" and goal.itemID) or nil
+  if not itemID then return 0 end
+
+  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+  if qualityMode == QUALITY_MODE_SPECIFIC and targetQuality then
+    return ns.GetHaveCountByQuality(addon, itemID, targetQuality)
+  end
+
+  return ns.GetHaveCount(addon, itemID)
+end
+
+local function GetGoalQualityBreakdown(addon, goal, itemID)
+  itemID = itemID or (type(goal) == "table" and goal.itemID) or nil
+  if not itemID then
+    return { [1] = 0, [2] = 0, [3] = 0 }
+  end
+  return ns.GetHaveQualityBreakdown(addon, itemID)
+end
+
 local function GetRecipeDisplayName(addon, goal)
   if goal.itemID then
     local itemName = ns.Data.GetItemNameWithCache(addon, goal.itemID)
@@ -48,17 +112,24 @@ function ns.Recipes.GetRecipeOutputItemID(recipeID)
   return nil
 end
 
-function ns.Recipes.SetGoalForRecipe(addon, recipeID, deltaQty)
-  if not recipeID or not deltaQty or deltaQty == 0 then return end
+function ns.Recipes.SetGoalForRecipe(addon, recipeID, deltaQty, opts)
+  local delta = tonumber(deltaQty) or 0
+  local hasTrackingUpdate = type(opts) == "table" and (opts.qualityMode ~= nil or opts.targetQuality ~= nil)
+  if not recipeID or (delta == 0 and not hasTrackingUpdate) then return end
 
   local goals = addon.db.profile.goals
   local key = "r:" .. tostring(recipeID)
-
-  goals[key] = goals[key] or { recipeID = recipeID, qty = 0, remaining = 0, profession = "Unknown" }
   local g = goals[key]
 
-  g.qty = math.max(0, (g.qty or 0) + deltaQty)
-  g.remaining = math.max(0, (g.remaining or 0) + deltaQty)
+  if not g then
+    if delta == 0 then return end
+    g = { recipeID = recipeID, qty = 0, remaining = 0, profession = "Unknown" }
+    goals[key] = g
+  end
+
+  g.qty = math.max(0, (g.qty or 0) + delta)
+  g.remaining = math.max(0, (g.remaining or 0) + delta)
+  SetGoalQualityTracking(g, hasTrackingUpdate and opts.qualityMode or g.qualityMode, hasTrackingUpdate and opts.targetQuality or g.targetQuality)
 
   local cache = ns.Data.EnsureRecipeCache(addon)
   if cache and cache[recipeID] then
@@ -112,6 +183,8 @@ function ns.Recipes.SetGoalForRecipe(addon, recipeID, deltaQty)
 
   if g.qty == 0 then
     goals[key] = nil
+    addon:MarkDirty()
+    return
   end
 
   addon:MarkDirty()
@@ -130,18 +203,22 @@ function ns.Recipes.ApplyCompletionByInventoryDelta(addon)
       end
 
       if itemID then
-        local haveNow = ns.GetHaveCount(addon, itemID)
-        local havePrev = addon.lastHave[itemID]
+        local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+        local haveNow = GetTrackedHaveCount(addon, goal, itemID)
+        local haveKey = (qualityMode == QUALITY_MODE_SPECIFIC and targetQuality)
+          and (tostring(itemID) .. ":" .. tostring(targetQuality))
+          or tostring(itemID)
+        local havePrev = addon.lastHave[haveKey]
 
         if havePrev == nil then
-          addon.lastHave[itemID] = haveNow
+          addon.lastHave[haveKey] = haveNow
         else
           local delta = haveNow - havePrev
           if delta > 0 and (goal.remaining or 0) > 0 then
             goal.remaining = math.max(0, (goal.remaining or 0) - delta)
             touched = true
           end
-          addon.lastHave[itemID] = haveNow
+          addon.lastHave[haveKey] = haveNow
         end
 
         if (goal.remaining or 0) <= 0 then
@@ -232,7 +309,7 @@ function ns.Recipes.RecomputeDisplayOnly(addon)
     if row.itemID then
       local itemName = ns.Data.GetItemNameWithCache(addon, row.itemID) or row.rawName or row.name
       if itemName and itemName ~= "" then
-        row.name = ns.Data.ColorizeByQuality(row.itemID, itemName)
+        row.name = GetGoalDisplayName(ns.Data.ColorizeByQuality(row.itemID, itemName), row)
         row.rawName = row.rawName or itemName
       end
 
@@ -472,10 +549,15 @@ function ns.Recipes.RecomputeCaches(addon)
           if itemID then goal.itemID = itemID end
         end
 
-        local name = GetRecipeDisplayName(addon, goal)
+        local baseName = GetRecipeDisplayName(addon, goal)
+        local name = GetGoalDisplayName(baseName, goal)
         local rarity = (goal.itemID and MemoQuality(goal.itemID)) or goal.rarity or -1
         local prof = ns.Data.NormalizeProfessionName(goal.profession) or "Unknown"
         if prof ~= "Unknown" then goal.profession = prof end
+        local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+        local trackedHave = GetTrackedHaveCount(addon, goal, itemID)
+        local qualityBreakdown = GetGoalQualityBreakdown(addon, goal, itemID)
+        local isDecor = itemID and ns.Data.IsDecorItem(itemID) or false
 
         local expacID = itemID and MemoExpacID(itemID) or nil
         if expacID == nil then
@@ -491,7 +573,7 @@ function ns.Recipes.RecomputeCaches(addon)
         local pInfo = ns.GetProfessionInfo and ns.GetProfessionInfo(prof) or nil
         local row = {
           name = name,
-          rawName = goal.name or name,
+          rawName = goal.name or baseName,
           remaining = goal.remaining or 0,
           recipeID = goal.recipeID,
           itemID = itemID,
@@ -503,6 +585,12 @@ function ns.Recipes.RecomputeCaches(addon)
           expacID = expacID,
           expacName = expacName,
           icon = itemID and MemoIcon(itemID) or nil,
+          need = goal.qty or 0,
+          have = trackedHave,
+          qualityMode = qualityMode,
+          targetQuality = targetQuality,
+          qualityBreakdown = qualityBreakdown,
+          isDecor = isDecor,
         }
 
         byProf[prof] = byProf[prof] or {}
@@ -618,6 +706,26 @@ function ns.Recipes.RecomputeCaches(addon)
   end
 
   ns.Reagents.BuildDisplayOnly(addon)
+end
+
+function ns.Recipes.GetGoalForRecipe(addon, recipeID)
+  local goals = addon and addon.db and addon.db.profile and addon.db.profile.goals
+  if not goals or not recipeID then return nil end
+  local goal = goals["r:" .. tostring(recipeID)]
+  if type(goal) ~= "table" then return nil end
+  return goal
+end
+
+function ns.Recipes.GetGoalQualityTracking(goal)
+  return NormalizeGoalQualityTracking(goal)
+end
+
+function ns.Recipes.GetTrackedHaveCount(addon, goal, itemID)
+  return GetTrackedHaveCount(addon, goal, itemID)
+end
+
+function ns.Recipes.GetGoalQualityBreakdown(addon, goal, itemID)
+  return GetGoalQualityBreakdown(addon, goal, itemID)
 end
 
 ns.GetRecipeOutputItemID = ns.Recipes.GetRecipeOutputItemID

@@ -66,6 +66,60 @@ local function GetItemQuality(itemID)
   return select(3, GetItemInfo(itemID))
 end
 
+local function NormalizeTrackedQuality(quality)
+  quality = tonumber(quality)
+  if quality == nil then return nil end
+  quality = math.floor(quality)
+  if quality < 1 or quality > 3 then return nil end
+  return quality
+end
+
+local QUALITY_LABELS = {
+  [1] = "Bronze",
+  [2] = "Silver",
+  [3] = "Gold",
+}
+
+local function GetTrackedQualityLabel(quality)
+  quality = NormalizeTrackedQuality(quality)
+  return quality and QUALITY_LABELS[quality] or nil
+end
+
+local function GetTrackedQualityFromItemLink(itemLink)
+  if type(itemLink) ~= "string" or itemLink == "" then
+    return nil
+  end
+
+  local api = C_TradeSkillUI
+  if api then
+    for _, fn in pairs({
+      api.GetItemCraftedQualityByItemInfo,
+      api.GetItemReagentQualityByItemInfo,
+    }) do
+      if type(fn) == "function" then
+        local ok, quality = pcall(fn, itemLink)
+        quality = NormalizeTrackedQuality(ok and quality or nil)
+        if quality then
+          return quality
+        end
+      end
+    end
+  end
+
+  return nil
+end
+
+local function GetTrackedQualityFromContainerItem(bagID, slot, info)
+  local itemLink = info and info.hyperlink
+  if (not itemLink or itemLink == "") and C_Container and C_Container.GetContainerItemLink then
+    local ok, link = pcall(C_Container.GetContainerItemLink, bagID, slot)
+    if ok then
+      itemLink = link
+    end
+  end
+  return GetTrackedQualityFromItemLink(itemLink)
+end
+
 local function ColorizeByQuality(itemID, text)
   if not itemID or not text then return text end
   local q = GetItemQuality(itemID)
@@ -81,6 +135,36 @@ local function ColorizeByQuality(itemID, text)
   end
 
   return text
+end
+
+local function IsDecorItem(itemID)
+  if not itemID then return false end
+
+  local itemType, itemSubType = select(6, GetItemInfoInstant(itemID))
+  if not itemType then
+    itemType, itemSubType = select(6, GetItemInfo(itemID))
+  end
+
+  local function norm(v)
+    if type(v) ~= "string" then return "" end
+    return string.lower(v)
+  end
+
+  local itemTypeText = norm(itemType)
+  local itemSubTypeText = norm(itemSubType)
+  if itemTypeText == "housing" then
+    return true
+  end
+  if itemSubTypeText == "decor" then
+    return true
+  end
+  if string.find(itemTypeText, "housing", 1, true) then
+    return true
+  end
+  if string.find(itemSubTypeText, "decor", 1, true) then
+    return true
+  end
+  return false
 end
 
 local function GetItemExpansionID(itemID)
@@ -202,7 +286,12 @@ ns.Data.ceilDiv = ceilDiv
 ns.Data.playerKey = playerKey
 ns.Data.GetItemNameFast = GetItemNameFast
 ns.Data.GetItemQuality = GetItemQuality
+ns.Data.NormalizeTrackedQuality = NormalizeTrackedQuality
+ns.Data.GetTrackedQualityLabel = GetTrackedQualityLabel
+ns.Data.GetTrackedQualityFromItemLink = GetTrackedQualityFromItemLink
+ns.Data.GetTrackedQualityFromContainerItem = GetTrackedQualityFromContainerItem
 ns.Data.ColorizeByQuality = ColorizeByQuality
+ns.Data.IsDecorItem = IsDecorItem
 ns.Data.GetItemExpansionID = GetItemExpansionID
 ns.Data.GetExpansionName = GetExpansionName
 ns.Data.PickRequiredReagent = PickRequiredReagent
@@ -255,6 +344,60 @@ function ns.GetHaveCount(addon, itemID)
   end
 
   return total
+end
+
+function ns.GetHaveCountByQuality(addon, itemID, quality)
+  if not (addon and addon.db and itemID) then return 0 end
+  quality = NormalizeTrackedQuality(quality)
+  if not quality then return 0 end
+
+  local realm = ns.Data.playerKey()
+  local realms = addon.db.global and addon.db.global.realms
+  local realmData = realms and realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return 0 end
+
+  local total = 0
+  for _, entry in pairs(chars) do
+    if type(entry) == "table" then
+      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality", "warbankByQuality" }) do
+        local bucket = entry[bucketName]
+        local byItem = type(bucket) == "table" and bucket[itemID]
+        if type(byItem) == "table" then
+          total = total + (byItem[quality] or 0)
+        end
+      end
+    end
+  end
+
+  return total
+end
+
+function ns.GetHaveQualityBreakdown(addon, itemID)
+  local breakdown = { [1] = 0, [2] = 0, [3] = 0 }
+  if not (addon and addon.db and itemID) then return breakdown end
+
+  local realm = ns.Data.playerKey()
+  local realms = addon.db.global and addon.db.global.realms
+  local realmData = realms and realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return breakdown end
+
+  for _, entry in pairs(chars) do
+    if type(entry) == "table" then
+      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality", "warbankByQuality" }) do
+        local bucket = entry[bucketName]
+        local byItem = type(bucket) == "table" and bucket[itemID]
+        if type(byItem) == "table" then
+          for quality = 1, 3 do
+            breakdown[quality] = breakdown[quality] + (byItem[quality] or 0)
+          end
+        end
+      end
+    end
+  end
+
+  return breakdown
 end
 
 -- Called by Core.lua on TRADE_SKILL_LIST_UPDATE / SHOW / NEW_RECIPE_LEARNED

@@ -17,7 +17,7 @@ local defaults = {
       reagentSort = "E",
       collapsed = {},
     },
-    minimap = { hide = true },
+    minimap = { hide = false },
     includeAlts = false,
     visual = {
       textOutline = true,

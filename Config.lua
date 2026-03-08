@@ -354,6 +354,17 @@ local function buildConfigWindow(addon)
   addSectionLabel("Settings", left, y)
   y = y - 24
 
+  f.MinimapIcon = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+  f.MinimapIcon:SetPoint("TOPLEFT", f, "TOPLEFT", left - 2, y)
+  f.MinimapIcon.text:SetText("Show Minimap Button")
+  setFontStringColor(f.MinimapIcon.text, COLOR_FIELD)
+  f.MinimapIcon:SetScript("OnClick", function(self)
+    if ns.SetMinimapButtonEnabled then
+      ns.SetMinimapButtonEnabled(addon, self:GetChecked())
+    end
+  end)
+  y = y - 30
+
   addFieldLabel("Border Color", left + 20, y)
   f.BorderColor = makeColorButton(f, left, y + 2, v.borderColor, onVisualChanged, true)
   y = y - 26
@@ -418,6 +429,9 @@ function ns.ShowConfigWindow(addon, show)
   end
   local f = ns.ConfigWindow
 
+  if f.MinimapIcon and ns.IsMinimapButtonEnabled then
+    f.MinimapIcon:SetChecked(ns.IsMinimapButtonEnabled(addon))
+  end
   f.Outline:SetChecked(v.textOutline)
   f.SizeBox:SetNumber(v.textSize)
   f.Rounded:SetChecked(v.showRoundedBorder)

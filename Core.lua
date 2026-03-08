@@ -121,6 +121,7 @@ function DSL:OnEnable()
   self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", "OnTradeSkillListUpdate")
   self:RegisterEvent("TRADE_SKILL_SHOW", "OnTradeSkillListUpdate")
   self:RegisterEvent("NEW_RECIPE_LEARNED", "OnTradeSkillListUpdate")
+  self:RegisterEvent("SKILL_LINES_CHANGED", "OnTradeSkillListUpdate")
   self:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "OnInteractionFrameShow")
 end
 
@@ -194,7 +195,8 @@ function DSL:OnTradeSkillListUpdate()
     return
   end
 
-  self:MarkDirty("full")
+  -- No learned-state change: avoid full rebuild and refresh display only.
+  self:MarkDirty("display")
 end
 
 function DSL:MarkDirty(reason)

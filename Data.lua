@@ -740,7 +740,7 @@ function ns.SetGoalForRecipe(addon, recipeID, deltaQty)
   local goals = addon.db.profile.goals
   local key = "r:" .. tostring(recipeID)
 
-  goals[key] = goals[key] or { recipeID = recipeID, qty = 0, remaining = 0 }
+  goals[key] = goals[key] or { recipeID = recipeID, qty = 0, remaining = 0, profession = "Unknown" }
   local g = goals[key]
 
   g.qty = math.max(0, (g.qty or 0) + deltaQty)
@@ -771,8 +771,12 @@ function ns.SetGoalForRecipe(addon, recipeID, deltaQty)
   EnsureProfessionsLoaded()
   do
     local profName, profID = GetProfessionForRecipe(recipeID)
-    g.profession = NormalizeProfessionName(profName) or "Unknown"
-    g.professionID = profID
+    local normalized = NormalizeProfessionName(profName)
+    -- Keep existing grouping stable on transient API misses.
+    if normalized and normalized ~= "Unknown" then
+      g.profession = normalized
+      g.professionID = profID
+    end
   end
 
   local out = ns.GetRecipeOutputItemID(recipeID)
@@ -802,21 +806,6 @@ function ns.SetGoalForRecipe(addon, recipeID, deltaQty)
   end
 
   addon:MarkDirty()
-
-  -- One-time migration/fix-up: ensure legacy saved goals have a profession grouping
-  -- (old entries were incorrectly tagged and now won't show under real professions).
-  addon.db.profile.migrations = addon.db.profile.migrations or {}
-  if not addon.db.profile.migrations.professionFixV1 then
-    for _, goal in pairs(addon.db.profile.goals) do
-      if type(goal) == "table" and goal.recipeID and (goal.remaining or 0) > 0 then
-        if not goal.profession or goal.profession == "" or goal.profession == "Unknown" or goal.profession == "Enchanting" then
-          goal.profession = "Unknown"
-          goal.professionID = nil
-        end
-      end
-    end
-    addon.db.profile.migrations.professionFixV1 = true
-  end
 end
 
 function ns.ApplyCompletionByInventoryDelta(addon)
@@ -904,11 +893,14 @@ end
 -- Recompute (recipes + reagents)
 -- -------------------------
 
-local function GetRecipeDisplayName(goal)
+local function GetRecipeDisplayName(addon, goal)
   if goal.itemID then
-    local itemName = GetItemNameFast(goal.itemID)
+    local itemName = GetItemNameWithCache(addon, goal.itemID)
     if itemName then
       return ColorizeByQuality(goal.itemID, itemName)
+    end
+    if goal.name and goal.name ~= "" then
+      return ColorizeByQuality(goal.itemID, goal.name)
     end
   end
 
@@ -952,6 +944,26 @@ function ns.RecomputeDisplayOnly(addon)
 
   local byProf = {}
   for _, row in ipairs(addon.cache.recipes) do
+    if row.itemID then
+      -- Refresh display metadata from cache as item info becomes available.
+      local itemName = GetItemNameWithCache(addon, row.itemID) or row.rawName or row.name
+      if itemName and itemName ~= "" then
+        row.name = ColorizeByQuality(row.itemID, itemName)
+        row.rawName = row.rawName or itemName
+      end
+
+      local quality = GetItemQuality(row.itemID)
+      if quality ~= nil then
+        row.rarity = quality
+      end
+
+      local expacID = GetItemExpansionID(row.itemID)
+      if expacID ~= nil then
+        row.expacID = expacID
+        row.expacName = GetExpansionName(expacID)
+      end
+    end
+
     local prof = (row.profession and row.profession ~= "") and row.profession or "Unknown"
     byProf[prof] = byProf[prof] or {}
     table.insert(byProf[prof], row)
@@ -1205,13 +1217,21 @@ function ns.RecomputeCaches(addon)
           if itemID then goal.itemID = itemID end
         end
 
-        local name = GetRecipeDisplayName(goal)
-        local rarity = (goal.itemID and MemoQuality(goal.itemID)) or -1
+        local name = GetRecipeDisplayName(addon, goal)
+        local rarity = (goal.itemID and MemoQuality(goal.itemID)) or goal.rarity or -1
         local prof = NormalizeProfessionName(goal.profession) or "Unknown"
         if prof ~= "Unknown" then goal.profession = prof end
 
 		local expacID = itemID and MemoExpacID(itemID) or nil
-		local expacName = MemoExpacName(expacID)
+        if expacID == nil then
+          expacID = goal.expacID
+        end
+		local expacName = (expacID ~= nil and MemoExpacName(expacID)) or goal.expacName or "Unknown"
+        goal.rarity = rarity
+        if expacID ~= nil then
+          goal.expacID = expacID
+          goal.expacName = expacName
+        end
 
 		local pInfo = ns.GetProfessionInfo and ns.GetProfessionInfo(prof) or nil
 

@@ -5,7 +5,7 @@
 ## Version: 0.1.0
 ## Category: Professions
 ## SavedVariables: DecorShoppingListDB
-## OptionalDeps: Ace3, LibDataBroker-1.1, LibDBIcon-1.0, LibPeriodicTable-3.1
+## OptionalDeps: Ace3, LibDataBroker-1.1, LibDBIcon-1.0, LibPeriodicTable-3.1, LibSharedMedia-3.0
 
 embeds.xml
 locale/locale.xml

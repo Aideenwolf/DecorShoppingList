@@ -19,8 +19,6 @@ function ns.InitBroker(addon)
     end,
     OnTooltipShow = function(tt)
       tt:AddLine(L["ADDON_NAME"])
-      tt:AddLine(L["MINIMAP_TOGGLE"])
-      tt:AddLine(L["SLASH_HELP"])
     end,
   })
 

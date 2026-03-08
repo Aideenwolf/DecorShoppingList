@@ -1,5 +1,628 @@
 local ADDON, ns = ...
 ns = ns or {}
+local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
 
 ns.Recipes = ns.Recipes or {}
 
+local function GetRecipeDisplayName(addon, goal)
+  if goal.itemID then
+    local itemName = ns.Data.GetItemNameWithCache(addon, goal.itemID)
+    if itemName then
+      return ns.Data.ColorizeByQuality(goal.itemID, itemName)
+    end
+    if goal.name and goal.name ~= "" then
+      return ns.Data.ColorizeByQuality(goal.itemID, goal.name)
+    end
+  end
+
+  if goal.recipeID then
+    local schematic = ns.Data.GetRecipeSchematicSafe(goal.recipeID)
+    if schematic and schematic.name then
+      return schematic.name
+    end
+  end
+
+  if goal.name then return goal.name end
+  if goal.recipeID then return "Recipe " .. goal.recipeID end
+  if goal.itemID then return "Item " .. goal.itemID end
+  return "Unknown"
+end
+
+function ns.Recipes.GetRecipeOutputItemID(recipeID)
+  if not recipeID then return nil end
+
+  local schematic = ns.Data.GetRecipeSchematicSafe(recipeID)
+  if schematic then
+    if schematic.outputItemID then return schematic.outputItemID end
+    if schematic.productItemID then return schematic.productItemID end
+  end
+
+  if C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
+    local info = C_TradeSkillUI.GetRecipeInfo(recipeID)
+    if info then
+      if info.productItemID then return info.productItemID end
+      if info.outputItemID then return info.outputItemID end
+    end
+  end
+
+  return nil
+end
+
+function ns.Recipes.SetGoalForRecipe(addon, recipeID, deltaQty)
+  if not recipeID or not deltaQty or deltaQty == 0 then return end
+
+  local goals = addon.db.profile.goals
+  local key = "r:" .. tostring(recipeID)
+
+  goals[key] = goals[key] or { recipeID = recipeID, qty = 0, remaining = 0, profession = "Unknown" }
+  local g = goals[key]
+
+  g.qty = math.max(0, (g.qty or 0) + deltaQty)
+  g.remaining = math.max(0, (g.remaining or 0) + deltaQty)
+
+  local cache = ns.Data.EnsureRecipeCache(addon)
+  if cache and cache[recipeID] then
+    g.needsScan = nil
+  else
+    if ns.Snapshots.IsPlayerProfessionUIOpen() then
+      ns.Snapshots.SnapshotRecipeToCache(addon, recipeID, true)
+      if cache and cache[recipeID] then
+        g.needsScan = nil
+      else
+        g.needsScan = true
+      end
+    else
+      g.needsScan = true
+    end
+  end
+
+  ns.IsRecipeLearned(addon, recipeID)
+  ns.Data.EnsureProfessionsLoaded()
+
+  do
+    local profName, profID = ns.Snapshots.GetProfessionForRecipe(recipeID)
+    local normalized = ns.Data.NormalizeProfessionName(profName)
+    if normalized and normalized ~= "Unknown" then
+      g.profession = normalized
+      g.professionID = profID
+    end
+  end
+
+  local out = ns.GetRecipeOutputItemID(recipeID)
+  if out then
+    g.itemID = out
+    addon.db.profile.recipeByItem[out] = recipeID
+  end
+
+  do
+    local schematic = ns.Data.GetRecipeSchematicSafe(recipeID)
+    if schematic and schematic.name then
+      g.name = schematic.name
+    end
+
+    if out then
+      local itemName = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(out)) or GetItemInfo(out)
+      if itemName then
+        g.name = itemName
+      elseif C_Item and C_Item.RequestLoadItemDataByID then
+        C_Item.RequestLoadItemDataByID(out)
+      end
+    end
+  end
+
+  if g.qty == 0 then
+    goals[key] = nil
+  end
+
+  addon:MarkDirty()
+end
+
+function ns.Recipes.ApplyCompletionByInventoryDelta(addon)
+  local goals = addon.db.profile.goals
+  local touched = false
+
+  for goalKey, goal in pairs(goals) do
+    if type(goal) == "table" then
+      local itemID = goal.itemID
+      if not itemID and goal.recipeID then
+        itemID = ns.GetRecipeOutputItemID(goal.recipeID)
+        if itemID then goal.itemID = itemID end
+      end
+
+      if itemID then
+        local haveNow = ns.GetHaveCount(addon, itemID)
+        local havePrev = addon.lastHave[itemID]
+
+        if havePrev == nil then
+          addon.lastHave[itemID] = haveNow
+        else
+          local delta = haveNow - havePrev
+          if delta > 0 and (goal.remaining or 0) > 0 then
+            goal.remaining = math.max(0, (goal.remaining or 0) - delta)
+            touched = true
+          end
+          addon.lastHave[itemID] = haveNow
+        end
+
+        if (goal.remaining or 0) <= 0 then
+          local rawName = ns.Data.GetItemNameWithCache(addon, itemID) or goal.name or ("Item " .. itemID)
+          goals[goalKey] = nil
+          addon:Print(string.format(L["COMPLETED_RECIPE"], rawName))
+          touched = true
+        end
+      end
+    end
+  end
+
+  if touched then
+    addon.dirty = true
+  end
+end
+
+function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, depth)
+  if depth > 20 then return end
+  if not recipeID or desiredItems <= 0 then return end
+
+  local yieldMin, reagentsList
+
+  local schematic = ns.Data.GetRecipeSchematicSafe(recipeID)
+  if schematic then
+    yieldMin = 1
+    if schematic.quantityMin and schematic.quantityMin > 0 then
+      yieldMin = schematic.quantityMin
+    end
+
+    reagentsList = {}
+    local slots = schematic.reagentSlotSchematics
+    if slots then
+      for _, slot in ipairs(slots) do
+        local r = ns.Data.PickRequiredReagent(slot)
+        local qtyReq = (slot and slot.quantityRequired) or (r and r.quantityRequired) or 0
+        if r and r.itemID and qtyReq and qtyReq > 0 then
+          table.insert(reagentsList, { itemID = r.itemID, qty = qtyReq })
+        end
+      end
+    end
+
+    if reagentsList and #reagentsList > 0 then
+      local cache = ns.Data.EnsureRecipeCache(addon)
+      if cache then
+        cache[recipeID] = { yieldMin = yieldMin, reagents = reagentsList, ts = time() }
+      end
+    end
+  end
+
+  if (not reagentsList or #reagentsList == 0) then
+    local cache = ns.Data.EnsureRecipeCache(addon)
+    if not cache then return end
+    local snap = cache[recipeID]
+    if not snap or not snap.reagents or #snap.reagents == 0 then
+      return
+    end
+    yieldMin = snap.yieldMin or 1
+    reagentsList = snap.reagents
+  end
+
+  local craftsNeeded = ns.Data.ceilDiv(desiredItems, yieldMin)
+  if craftsNeeded <= 0 then return end
+
+  for _, r in ipairs(reagentsList) do
+    if r and r.itemID and r.qty then
+      local itemID = r.itemID
+      local qty = (r.qty * craftsNeeded)
+      addon.cache.reagents[itemID] = (addon.cache.reagents[itemID] or 0) + qty
+    end
+  end
+end
+
+function ns.Recipes.RecomputeDisplayOnly(addon)
+  if not (addon and addon.cache) then return end
+  if not addon.cache.recipes or not addon.cache.reagentsList then
+    return ns.RecomputeCaches(addon)
+  end
+
+  addon.db.profile.window = addon.db.profile.window or {}
+  addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
+  local collapsed = addon.db.profile.window.collapsed
+
+  addon.cache.recipesDisplay = {}
+  local byProf = {}
+
+  for _, row in ipairs(addon.cache.recipes) do
+    if row.itemID then
+      local itemName = ns.Data.GetItemNameWithCache(addon, row.itemID) or row.rawName or row.name
+      if itemName and itemName ~= "" then
+        row.name = ns.Data.ColorizeByQuality(row.itemID, itemName)
+        row.rawName = row.rawName or itemName
+      end
+
+      local quality = ns.Data.GetItemQuality(row.itemID)
+      if quality ~= nil then
+        row.rarity = quality
+      end
+
+      local expacID = ns.Data.GetItemExpansionID(row.itemID)
+      if expacID ~= nil then
+        row.expacID = expacID
+        row.expacName = ns.Data.GetExpansionName(expacID)
+      end
+    end
+
+    local prof = (row.profession and row.profession ~= "") and row.profession or "Unknown"
+    byProf[prof] = byProf[prof] or {}
+    table.insert(byProf[prof], row)
+  end
+
+  local profNames = {}
+  for profName, _ in pairs(byProf) do
+    table.insert(profNames, profName)
+  end
+  table.sort(profNames)
+
+  for _, profName in ipairs(profNames) do
+    table.insert(addon.cache.recipesDisplay, {
+      isHeader = true,
+      profession = profName,
+      name = profName,
+      remaining = nil,
+      groupKey = "PROF:" .. profName,
+      level = 1,
+    })
+
+    local list = byProf[profName]
+    local rMode = (addon.db.profile.window and addon.db.profile.window.recipeSort) or "N"
+    ns.Sorting.SortRecipeList(list, rMode)
+
+    if not collapsed["PROF:" .. profName] and not collapsed[profName] then
+      if rMode == "E" then
+        local lastExpac = nil
+        for _, r in ipairs(list) do
+          local expacID = r.expacID or -1
+          if expacID ~= lastExpac then
+            lastExpac = expacID
+            table.insert(addon.cache.recipesDisplay, {
+              isHeader = true,
+              profession = profName,
+              expacID = expacID,
+              name = r.expacName or "Unknown",
+              remaining = nil,
+              groupKey = "PROF:" .. profName .. ":EXP:" .. tostring(expacID),
+              level = 2,
+            })
+          end
+
+          if not collapsed["PROF:" .. profName .. ":EXP:" .. tostring(expacID)] then
+            r.level = 2
+            table.insert(addon.cache.recipesDisplay, r)
+          end
+        end
+      else
+        for _, r in ipairs(list) do
+          r.level = 1
+          table.insert(addon.cache.recipesDisplay, r)
+        end
+      end
+    end
+  end
+
+  local flat = {}
+  for _, e in ipairs(addon.cache.reagentsList or {}) do
+    table.insert(flat, e)
+  end
+  local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"
+  local sorted, display = ns.Reagents.SortAndBuildDisplay(flat, mode, collapsed, ns.Data.GetExpansionName)
+  addon.cache.reagentsList = sorted
+  addon.cache.reagentsDisplay = display
+end
+
+function ns.Recipes.RecomputeCaches(addon)
+  addon.cache = addon.cache or {}
+  addon.cache.recipes = {}
+  addon.cache.recipesDisplay = {}
+  addon.cache.reagents = {}
+  addon.cache.reagentsList = {}
+  addon.cache.reagentsDisplay = {}
+
+  addon.db.profile.window = addon.db.profile.window or {}
+  addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
+
+  if addon.db.profile.includeAlts then
+    if ns.BuildAltItemSums then
+      ns.BuildAltItemSums(addon)
+    end
+  else
+    addon.cache.altItemSums = nil
+  end
+
+  local collapsed = addon.db.profile.window.collapsed
+  local byProf = {}
+
+  addon.cache._sortCache = addon.cache._sortCache or {}
+  addon.cache._sortCache.recipesByProf = addon.cache._sortCache.recipesByProf or {}
+  addon.cache._sortCache.reagents = addon.cache._sortCache.reagents or {}
+
+  local memo = {
+    profByRecipe = {},
+    hasProfByName = {},
+    outputItemByRecipe = {},
+    qualityByItem = {},
+    expacByItem = {},
+    expacNameByID = {},
+    iconByItem = {},
+  }
+
+  local function MemoProfName(recipeID)
+    if not recipeID then return "Unknown" end
+    local v = memo.profByRecipe[recipeID]
+    if v ~= nil then return v end
+    v = ns.Data.NormalizeProfessionName(select(1, ns.Snapshots.GetProfessionForRecipe(recipeID)))
+    if not v or v == "" then v = "Unknown" end
+    memo.profByRecipe[recipeID] = v
+    return v
+  end
+
+  local function MemoHasProf(profName)
+    if not profName or profName == "" then return false end
+    local v = memo.hasProfByName[profName]
+    if v ~= nil then return v end
+    v = ns.PlayerHasProfession(profName) or false
+    memo.hasProfByName[profName] = v
+    return v
+  end
+
+  local function MemoOutputItem(recipeID)
+    if not recipeID then return nil end
+    local v = memo.outputItemByRecipe[recipeID]
+    if v ~= nil then return v end
+    v = ns.GetRecipeOutputItemID(recipeID)
+    memo.outputItemByRecipe[recipeID] = v or false
+    return v
+  end
+
+  local function MemoQuality(itemID)
+    if not itemID then return -1 end
+    local v = memo.qualityByItem[itemID]
+    if v ~= nil then return v end
+    v = ns.Data.GetItemQuality(itemID) or -1
+    memo.qualityByItem[itemID] = v
+    return v
+  end
+
+  local function MemoExpacID(itemID)
+    if not itemID then return nil end
+    local v = memo.expacByItem[itemID]
+    if v ~= nil then return v end
+    v = ns.Data.GetItemExpansionID(itemID)
+    memo.expacByItem[itemID] = v
+    return v
+  end
+
+  local function MemoExpacName(expacID)
+    if expacID == nil then return "Unknown" end
+    local v = memo.expacNameByID[expacID]
+    if v ~= nil then return v end
+    v = ns.Data.GetExpansionName(expacID) or "Unknown"
+    memo.expacNameByID[expacID] = v
+    return v
+  end
+
+  local function MemoIcon(itemID)
+    if not itemID then return nil end
+    local v = memo.iconByItem[itemID]
+    if v ~= nil then return v end
+    v = ((C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(itemID)) or GetItemIcon(itemID))
+    memo.iconByItem[itemID] = v
+    return v
+  end
+
+  for _, goal in pairs(addon.db.profile.goals) do
+    if type(goal) == "table" and (goal.remaining or 0) > 0 then
+      local allowed = true
+      local missingRecipe = false
+
+      if goal.recipeID then
+        local includeAlts = addon.db.profile.includeAlts
+        local profName = ns.Data.NormalizeProfessionName(goal.profession)
+        if not profName or profName == "Unknown" then
+          profName = MemoProfName(goal.recipeID)
+          if profName and profName ~= "" and profName ~= "Unknown" then
+            goal.profession = profName
+          end
+        end
+
+        local hasProf = (profName and profName ~= "Unknown") and MemoHasProf(profName) or false
+
+        if includeAlts then
+          allowed = true
+          if not hasProf then
+            missingRecipe = true
+          else
+            local learned = ns.IsRecipeLearned(addon, goal.recipeID)
+            if learned == false then
+              missingRecipe = true
+            end
+          end
+        else
+          if (profName and profName ~= "Unknown") and (not hasProf) then
+            allowed = false
+          else
+            allowed = true
+            if hasProf then
+              local learned = ns.IsRecipeLearned(addon, goal.recipeID)
+              if learned == false then
+                missingRecipe = true
+              end
+            end
+          end
+        end
+      end
+
+      if allowed then
+        if goal.recipeID and (not goal.profession or goal.profession == "" or goal.profession == "Unknown") then
+          local pname, pid = ns.Snapshots.GetProfessionForRecipe(goal.recipeID)
+          if pname and pname ~= "" then
+            goal.profession = pname
+            goal.professionID = pid
+          end
+        end
+
+        local itemID = goal.itemID
+        if goal.recipeID and not itemID then
+          itemID = MemoOutputItem(goal.recipeID)
+          if itemID then goal.itemID = itemID end
+        end
+
+        local name = GetRecipeDisplayName(addon, goal)
+        local rarity = (goal.itemID and MemoQuality(goal.itemID)) or goal.rarity or -1
+        local prof = ns.Data.NormalizeProfessionName(goal.profession) or "Unknown"
+        if prof ~= "Unknown" then goal.profession = prof end
+
+        local expacID = itemID and MemoExpacID(itemID) or nil
+        if expacID == nil then
+          expacID = goal.expacID
+        end
+        local expacName = (expacID ~= nil and MemoExpacName(expacID)) or goal.expacName or "Unknown"
+        goal.rarity = rarity
+        if expacID ~= nil then
+          goal.expacID = expacID
+          goal.expacName = expacName
+        end
+
+        local pInfo = ns.GetProfessionInfo and ns.GetProfessionInfo(prof) or nil
+        local row = {
+          name = name,
+          rawName = goal.name or name,
+          remaining = goal.remaining or 0,
+          recipeID = goal.recipeID,
+          itemID = itemID,
+          outputItemID = itemID,
+          profession = prof,
+          professionIcon = pInfo and pInfo.icon or nil,
+          rarity = rarity,
+          missing = missingRecipe,
+          expacID = expacID,
+          expacName = expacName,
+          icon = itemID and MemoIcon(itemID) or nil,
+        }
+
+        byProf[prof] = byProf[prof] or {}
+        table.insert(byProf[prof], row)
+        table.insert(addon.cache.recipes, row)
+
+        if goal.recipeID then
+          local cache = ns.Data.EnsureRecipeCache(addon)
+          local entry = cache and cache[goal.recipeID]
+
+          if not entry and ns.Snapshots.IsPlayerProfessionUIOpen() then
+            ns.Snapshots.SnapshotRecipeToCache(addon, goal.recipeID, false)
+            entry = cache and cache[goal.recipeID]
+          end
+
+          if entry then
+            goal.needsScan = nil
+            row.needsScan = nil
+            ns.AccumulateReagentsForRecipe(addon, goal.recipeID, goal.remaining or 0, 0)
+          else
+            goal.needsScan = true
+            row.needsScan = true
+          end
+        end
+      end
+    end
+  end
+
+  local profNames = {}
+  for profName, _ in pairs(byProf) do
+    table.insert(profNames, profName)
+  end
+  table.sort(profNames)
+
+  for _, profName in ipairs(profNames) do
+    table.insert(addon.cache.recipesDisplay, {
+      isHeader = true,
+      profession = profName,
+      name = profName,
+      remaining = nil,
+      groupKey = "PROF:" .. profName,
+      level = 1,
+    })
+
+    local list = byProf[profName]
+    local profCache = addon.cache._sortCache.recipesByProf
+    local rMode = (addon.db.profile.window and addon.db.profile.window.recipeSort) or "N"
+    local sig = ns.Sorting.BuildRecipeSortSignature(list, rMode)
+
+    local entry = profCache[profName]
+    if entry and entry.sig == sig and entry.order then
+      local map = {}
+      for _, r in ipairs(list) do
+        local k = tostring(r.recipeID or r.itemID or r.name or "")
+        map[k] = r
+      end
+
+      local ordered = {}
+      local ok = true
+      for _, k in ipairs(entry.order) do
+        local r = map[k]
+        if not r then ok = false break end
+        table.insert(ordered, r)
+      end
+
+      if ok and #ordered == #list then
+        list = ordered
+        byProf[profName] = ordered
+      else
+        entry = nil
+      end
+    end
+
+    if not entry then
+      ns.Sorting.SortRecipeList(list, rMode)
+      local order = {}
+      for _, r in ipairs(list) do
+        table.insert(order, tostring(r.recipeID or r.itemID or r.name or ""))
+      end
+      profCache[profName] = { sig = sig, order = order }
+    end
+
+    if not collapsed["PROF:" .. profName] and not collapsed[profName] then
+      if rMode == "E" then
+        local lastExpac = nil
+        for _, r in ipairs(list) do
+          local expacID = r.expacID or -1
+          if expacID ~= lastExpac then
+            lastExpac = expacID
+            table.insert(addon.cache.recipesDisplay, {
+              isHeader = true,
+              profession = profName,
+              expacID = expacID,
+              name = r.expacName or "Unknown",
+              remaining = nil,
+              groupKey = "PROF:" .. profName .. ":EXP:" .. tostring(expacID),
+              level = 2,
+            })
+          end
+
+          if not collapsed["PROF:" .. profName .. ":EXP:" .. tostring(expacID)] then
+            r.level = 2
+            table.insert(addon.cache.recipesDisplay, r)
+          end
+        end
+      else
+        for _, r in ipairs(list) do
+          r.level = 1
+          table.insert(addon.cache.recipesDisplay, r)
+        end
+      end
+    end
+  end
+
+  ns.Reagents.BuildDisplayOnly(addon)
+end
+
+ns.GetRecipeOutputItemID = ns.Recipes.GetRecipeOutputItemID
+ns.SetGoalForRecipe = ns.Recipes.SetGoalForRecipe
+ns.ApplyCompletionByInventoryDelta = ns.Recipes.ApplyCompletionByInventoryDelta
+ns.AccumulateReagentsForRecipe = ns.Recipes.AccumulateReagentsForRecipe
+ns.RecomputeDisplayOnly = ns.Recipes.RecomputeDisplayOnly
+ns.RecomputeCaches = ns.Recipes.RecomputeCaches

@@ -4,7 +4,7 @@ local L = LibStub("AceLocale-3.0"):NewLocale("DecorShoppingList", "enUS", true)
 if not L then return end
 
 L["ADDON_NAME"] = "Decor Shopping List"
-L["SLASH_HELP"] = "Commands: /dsl (toggle), /dsl show, /dsl hide, /dsl reset, /dsl alts"
+L["SLASH_HELP"] = "Commands: /dsl (toggle + help), /dsl show, /dsl hide, /dsl config, /dsl settings, /dsl reset, /dsl alts"
 L["COMPLETED_RECIPE"] = "Decor Shopping List: %s completed."
 L["RECIPES"] = "Recipes"
 L["REAGENTS"] = "Reagents"

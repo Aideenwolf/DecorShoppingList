@@ -618,6 +618,124 @@ function ns.ShowListWindow(addon, show)
   end
 end
 
+local function GetHeaderIcon(view, entry)
+  local isProfHeader = false
+  if view == "recipes" then
+    isProfHeader = (entry.groupKey and entry.groupKey:match("^PROF:")) or (type(entry.profession) == "string" and entry.profession ~= "")
+  elseif view == "reagents" then
+    isProfHeader = (type(entry.profession) == "string" and entry.profession ~= "" and entry.profession:match("^PROF:"))
+  end
+
+  if not isProfHeader then
+    return nil
+  end
+
+  local profName
+  if view == "recipes" and entry.groupKey and entry.groupKey:match("^PROF:") then
+    profName = entry.name
+  elseif type(entry.profession) == "string" and entry.profession ~= "" then
+    profName = entry.profession:gsub("^PROF:", "")
+  end
+
+  if profName and ns.GetProfessionInfo then
+    local pInfo = ns.GetProfessionInfo(profName)
+    return pInfo and pInfo.icon or nil
+  end
+
+  return nil
+end
+
+local function RenderHeaderRow(row, entry, view, cHeader, collapsedMap)
+  row.StatusIcon:Hide()
+
+  local headerIcon = GetHeaderIcon(view, entry)
+
+  row.Icon:ClearAllPoints()
+  row.Icon:SetPoint("LEFT", row, "LEFT", 2, 0)
+  row.Name:ClearAllPoints()
+
+  if headerIcon then
+    row.Icon:SetTexture(headerIcon)
+    row.Icon:Show()
+    row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4, 0)
+  else
+    row.Icon:Hide()
+    row.Name:SetPoint("LEFT", row, "LEFT", 2, 0)
+  end
+
+  local key = entry.groupKey or entry.profession or entry.name
+  local collapsed = collapsedMap and collapsedMap[key]
+  local prefix = collapsed and "+ " or "- "
+  local headerName = (entry.name or ""):gsub("^%s+", "")
+
+  row.Name:SetText(prefix .. headerName)
+  row.Val:SetText("")
+  row.Name:SetTextColor(cHeader[1] or 1, cHeader[2] or 0.82, cHeader[3] or 0, cHeader[4] or 1)
+  row.Val:SetTextColor(1, 1, 1, 1)
+end
+
+local function RenderDataRow(row, entry, view, addon)
+  local ITEM_INDENT = 12
+  local indentPx = 12
+
+  row.Icon:ClearAllPoints()
+  row.Icon:SetPoint("LEFT", row, "LEFT", 2 + ITEM_INDENT, 0)
+  row.StatusIcon:ClearAllPoints()
+  row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -10, 0)
+
+  local tex
+  if view == "reagents" and entry.itemID then
+    tex = C_Item.GetItemIconByID(entry.itemID)
+  elseif view == "recipes" and entry.outputItemID then
+    tex = C_Item.GetItemIconByID(entry.outputItemID)
+  elseif entry.iconTexture then
+    tex = entry.iconTexture
+  end
+
+  if view == "reagents" and entry.isComplete then
+    row.StatusIcon:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
+    row.StatusIcon:Show()
+  else
+    row.StatusIcon:Hide()
+  end
+
+  if tex then
+    row.Icon:SetTexture(tex)
+    row.Icon:Show()
+  else
+    row.Icon:Hide()
+  end
+
+  row.Name:ClearAllPoints()
+  if row.Icon:IsShown() then
+    row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4 + indentPx, 0)
+  else
+    row.Name:SetPoint("LEFT", row, "LEFT", 2 + indentPx, 0)
+  end
+
+  if view == "recipes" and entry.recipeID and (not ns.IsRecipeLearned(addon, entry.recipeID)) then
+    row.Name:SetText("|TInterface\\RaidFrame\\ReadyCheck-NotReady:14:14|t " .. (entry.name or ""))
+  else
+    row.Name:SetText(entry.name or "")
+  end
+
+  row.Val:SetText(tostring(entry.remaining or 0))
+
+  local isZero = (entry.remaining or 0) <= 0
+  if isZero then
+    row.Name:SetTextColor(0.5, 0.5, 0.5, 1)
+    row.Val:SetTextColor(0.5, 0.5, 0.5, 1)
+  else
+    local nr, ng, nb = 1, 1, 1
+    if view == "recipes" and type(entry.rarity) == "number" and entry.rarity >= 0 and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[entry.rarity] then
+      local qc = ITEM_QUALITY_COLORS[entry.rarity]
+      nr, ng, nb = qc.r or 1, qc.g or 1, qc.b or 1
+    end
+    row.Name:SetTextColor(nr, ng, nb, 1)
+    row.Val:SetTextColor(1, 1, 1, 1)
+  end
+end
+
 function ns.RefreshListWindow(addon)
   EnsureDefaults(addon)
   local f = ns.ListWindow
@@ -632,6 +750,7 @@ function ns.RefreshListWindow(addon)
   local fontPath = (lsm and lsm:Fetch("font", fontName, true)) or STANDARD_TEXT_FONT
   local fontFlags = (visual.textOutline == false) and "" or "OUTLINE"
   local cHeader = (visual.textColor and visual.textColor.header) or { 1, 0.82, 0, 1 }
+  local collapsedMap = addon.db.profile.window and addon.db.profile.window.collapsed
 
   f.RecipesTab:SetEnabled(view ~= "recipes")
   f.ReagentsTab:SetEnabled(view ~= "reagents")
@@ -709,124 +828,9 @@ function ns.RefreshListWindow(addon)
       row:Show()
 
       if entry.isHeader then
-        row.StatusIcon:Hide()
-
-        -- Header icon: ONLY show for profession headers (not expansion/source/etc.)
-        local isProfHeader = false
-        if view == "recipes" then
-          isProfHeader = (entry.groupKey and entry.groupKey:match("^PROF:")) or (type(entry.profession) == "string" and entry.profession ~= "")
-        elseif view == "reagents" then
-          isProfHeader = (type(entry.profession) == "string" and entry.profession ~= "" and entry.profession:match("^PROF:"))
-        end
-
-        local headerIcon
-        local profName
-
-        if isProfHeader then
-          if view == "recipes" and entry.groupKey and entry.groupKey:match("^PROF:") then
-            profName = entry.name
-          elseif type(entry.profession) == "string" and entry.profession ~= "" then
-            profName = entry.profession:gsub("^PROF:", "")
-          end
-
-          if profName and ns.GetProfessionInfo then
-            local pInfo = ns.GetProfessionInfo(profName)
-            headerIcon = pInfo and pInfo.icon or nil
-          end
-        end
-
-        -- Headers should NEVER appear indented: force icon + name anchors flush-left
-        row.Icon:ClearAllPoints()
-        row.Icon:SetPoint("LEFT", row, "LEFT", 2, 0)
-
-        row.Name:ClearAllPoints()
-
-        if headerIcon then
-          row.Icon:SetTexture(headerIcon)
-          row.Icon:Show()
-          row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4, 0)
-        else
-          row.Icon:Hide()
-          row.Name:SetPoint("LEFT", row, "LEFT", 2, 0)
-        end
-
-        local key = entry.groupKey or entry.profession or entry.name
-        local collapsed = addon.db.profile.window
-          and addon.db.profile.window.collapsed
-          and addon.db.profile.window.collapsed[key]
-
-        local prefix = collapsed and "+ " or "- "
-        local headerName = (entry.name or ""):gsub("^%s+", "")
-        row.Name:SetText(prefix .. headerName)
-        row.Val:SetText("")
-        row.Name:SetTextColor(cHeader[1] or 1, cHeader[2] or 0.82, cHeader[3] or 0, cHeader[4] or 1)
-        row.Val:SetTextColor(1, 1, 1, 1)
-
+        RenderHeaderRow(row, entry, view, cHeader, collapsedMap)
       else
-        -- Non-headers: items are ALWAYS indented (including the icon)
-        local ITEM_INDENT = 12
-
-        row.Icon:ClearAllPoints()
-        row.Icon:SetPoint("LEFT", row, "LEFT", 2 + ITEM_INDENT, 0)
-        row.StatusIcon:ClearAllPoints()
-        row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -10, 0)
-
-        -- Icon selection
-        local tex
-        if view == "reagents" and entry.itemID then
-          tex = C_Item.GetItemIconByID(entry.itemID)
-        elseif view == "recipes" and entry.outputItemID then
-          tex = C_Item.GetItemIconByID(entry.outputItemID)
-        elseif entry.iconTexture then
-          tex = entry.iconTexture
-        end
-
-        -- Status icon (reagents view only): show check when complete
-        if view == "reagents" and entry.isComplete then
-          row.StatusIcon:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
-          row.StatusIcon:Show()
-        else
-          row.StatusIcon:Hide()
-        end
-
-        if tex then
-          row.Icon:SetTexture(tex)
-          row.Icon:Show()
-        else
-          row.Icon:Hide()
-        end
-
-        -- Name: items ALWAYS have one fixed indent (headers never do)
-        local indentPx = 12
-
-        row.Name:ClearAllPoints()
-        if row.Icon:IsShown() then
-          row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4 + indentPx, 0)
-        else
-          row.Name:SetPoint("LEFT", row, "LEFT", 2 + indentPx, 0)
-        end
-
-        if view == "recipes" and entry.recipeID and (not ns.IsRecipeLearned(addon, entry.recipeID)) then
-          row.Name:SetText("|TInterface\\RaidFrame\\ReadyCheck-NotReady:14:14|t " .. (entry.name or ""))
-        else
-          row.Name:SetText(entry.name or "")
-        end
-
-        row.Val:SetText(tostring(entry.remaining or 0))
-
-        local isZero = (entry.remaining or 0) <= 0
-        if isZero then
-          row.Name:SetTextColor(0.5, 0.5, 0.5, 1)
-          row.Val:SetTextColor(0.5, 0.5, 0.5, 1)
-        else
-          local nr, ng, nb = 1, 1, 1
-          if view == "recipes" and type(entry.rarity) == "number" and entry.rarity >= 0 and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[entry.rarity] then
-            local qc = ITEM_QUALITY_COLORS[entry.rarity]
-            nr, ng, nb = qc.r or 1, qc.g or 1, qc.b or 1
-          end
-          row.Name:SetTextColor(nr, ng, nb, 1)
-          row.Val:SetTextColor(1, 1, 1, 1)
-        end
+        RenderDataRow(row, entry, view, addon)
       end
     end
     end

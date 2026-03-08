@@ -3,12 +3,64 @@ ns = ns or {}
 
 ns.Sorting = ns.Sorting or {}
 
+function ns.Sorting.NameKey(x)
+  return tostring(x and (x.rawName or x.name or "") or ""):lower()
+end
+
+function ns.Sorting.CompareNames(a, b)
+  local aKey = ns.Sorting.NameKey(a)
+  local bKey = ns.Sorting.NameKey(b)
+  if aKey ~= bKey then
+    return aKey < bKey
+  end
+
+  local aName = tostring(a and (a.name or a.rawName or "") or "")
+  local bName = tostring(b and (b.name or b.rawName or "") or "")
+  if aName ~= bName then
+    return aName < bName
+  end
+
+  local aID = tostring(a and (a.recipeID or a.itemID or a.groupKey or "") or "")
+  local bID = tostring(b and (b.recipeID or b.itemID or b.groupKey or "") or "")
+  return aID < bID
+end
+
+function ns.Sorting.SortRecipeList(list, mode)
+  list = list or {}
+  mode = mode or "N"
+
+  if mode == "E" then
+    table.sort(list, function(a, b)
+      local ae, be = (a.expacID or -1), (b.expacID or -1)
+      if ae ~= be then return ae > be end
+      return ns.Sorting.CompareNames(a, b)
+    end)
+    return list
+  end
+
+  table.sort(list, ns.Sorting.CompareNames)
+  return list
+end
+
+function ns.Sorting.BuildRecipeSortSignature(list, mode)
+  local parts = { tostring(mode or "N"), tostring(#(list or {})) }
+  for _, row in ipairs(list or {}) do
+    parts[#parts + 1] = table.concat({
+      tostring(row.recipeID or ""),
+      tostring(row.itemID or ""),
+      tostring(row.expacID or ""),
+      tostring(row.rawName or row.name or ""),
+    }, "\30")
+  end
+  return table.concat(parts, "\31")
+end
+
 function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
   flat = flat or {}
   collapsed = collapsed or {}
   mode = mode or "E"
 
-  local function nameKey(x) return (x.rawName or x.name or ""):lower() end
+  local function nameKey(x) return ns.Sorting.NameKey(x) end
   local function rarityKey(x) return (x.rarity or -1) end
 
   local function completeAwareCompare(a, b, innerCompare)
@@ -16,19 +68,19 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
       return (a.isComplete == false)
     end
     if a.isComplete and b.isComplete then
-      return nameKey(a) < nameKey(b)
+      return ns.Sorting.CompareNames(a, b)
     end
     return innerCompare(a, b)
   end
 
   local function sortN(a, b)
-    return nameKey(a) < nameKey(b)
+    return ns.Sorting.CompareNames(a, b)
   end
 
   local function sortR(a, b)
     local ar, br = rarityKey(a), rarityKey(b)
     if ar ~= br then return ar > br end
-    return nameKey(a) < nameKey(b)
+    return ns.Sorting.CompareNames(a, b)
   end
 
   local function sortEInner(a, b)
@@ -36,7 +88,7 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
     if ae ~= be then return ae > be end
     local ar, br = rarityKey(a), rarityKey(b)
     if ar ~= br then return ar > br end
-    return nameKey(a) < nameKey(b)
+    return ns.Sorting.CompareNames(a, b)
   end
 
   local function sortSInner(a, b)
@@ -67,7 +119,7 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
 
     local ar, br = rarityKey(a), rarityKey(b)
     if ar ~= br then return ar > br end
-    return nameKey(a) < nameKey(b)
+    return ns.Sorting.CompareNames(a, b)
   end
 
   if mode == "N" then
@@ -232,4 +284,3 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
 
   return flat, display
 end
-

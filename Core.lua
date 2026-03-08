@@ -267,11 +267,18 @@ function DSL:SlashCommand(input)
   input = strtrim(input or ""):lower()
 
   if input == "" or input == "toggle" then
-    ns.ShowListWindow(self, not ns.ListWindow:IsShown()); return
+    ns.ShowListWindow(self, not ns.ListWindow:IsShown())
+    self:Print(L["SLASH_HELP"])
+    return
   elseif input == "show" then
     ns.ShowListWindow(self, true); return
   elseif input == "hide" then
     ns.ShowListWindow(self, false); return
+  elseif input == "config" or input == "settings" then
+    if ns.ShowConfigWindow then
+      ns.ShowConfigWindow(self, true)
+    end
+    return
   elseif input == "alts" then
     self.db.profile.includeAlts = not self.db.profile.includeAlts
     self:Print((L["INCLUDE_ALTS"] .. ": " .. (self.db.profile.includeAlts and "ON" or "OFF")))

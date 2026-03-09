@@ -195,10 +195,9 @@ local function ensureRecipeEventHook()
   local f = CreateFrame("Frame")
   f:RegisterEvent("OPEN_RECIPE_RESPONSE")     -- often fires in normal mode
   f:RegisterEvent("TRADE_SKILL_SHOW")         -- profession UI opened
-  f:RegisterEvent("TRADE_SKILL_LIST_UPDATE")  -- list updates while open
   f:RegisterEvent("TRADE_SKILL_CLOSE")
 
-  local function requestScanAndRefresh()
+  local function syncTrackWidget()
     local addon = ns._dslAddonRef
     if not addon then return end
     if addon.inCombat or InCombatLockdown() then return end
@@ -206,39 +205,21 @@ local function ensureRecipeEventHook()
       ns._dslTryAttachTrackWidget()
     end
 
-    if not addon._dslTrackSyncTicker then
-      addon._dslTrackSyncTicker = addon:ScheduleRepeatingTimer(function()
-        local shown = (_G.ProfessionsFrame and _G.ProfessionsFrame:IsShown())
-            or (_G.TradeSkillFrame and _G.TradeSkillFrame:IsShown())
-        if not shown then
-          if addon._dslTrackSyncTicker then
-            addon:CancelTimer(addon._dslTrackSyncTicker)
-            addon._dslTrackSyncTicker = nil
-          end
-          return
-        end
-        if ns._dslTryAttachTrackWidget then
-          ns._dslTryAttachTrackWidget()
-        end
-        RefreshTrackWidget(addon)
-      end, 0.2)
-    end
-
-    -- throttle scan/refresh
     if addon._dslRecipeScanTimer then return end
     addon._dslRecipeScanTimer = addon:ScheduleTimer(function()
       addon._dslRecipeScanTimer = nil
 
       -- scan learned->true for THIS character only
+      local changed = false
       if ns.ScanCurrentProfessionLearned then
-        ns.ScanCurrentProfessionLearned(addon)
+        changed = ns.ScanCurrentProfessionLearned(addon) and true or false
       end
 
       RefreshTrackWidget(addon)
-
-      -- update list live while the profession window is open
-      addon:MarkDirty()
-    end, 0.25)
+      if changed then
+        addon:MarkDirty("full")
+      end
+    end, 0.05)
   end
 
   f:SetScript("OnEvent", function(_, event, recipeID)
@@ -246,22 +227,17 @@ local function ensureRecipeEventHook()
       if type(recipeID) == "number" then
         currentRecipeID = recipeID
       end
-      requestScanAndRefresh()
+      syncTrackWidget()
       return
     end
 
-    if event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_LIST_UPDATE" then
-      requestScanAndRefresh()
+    if event == "TRADE_SKILL_SHOW" then
+      syncTrackWidget()
       return
     end
 
     -- TRADE_SKILL_CLOSE
     currentRecipeID = nil
-    local addon = ns._dslAddonRef
-    if addon and addon._dslTrackSyncTicker then
-      addon:CancelTimer(addon._dslTrackSyncTicker)
-      addon._dslTrackSyncTicker = nil
-    end
   end)
 
   ns._dslRecipeEventFrame = f

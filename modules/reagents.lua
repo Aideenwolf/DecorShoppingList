@@ -2,6 +2,7 @@ local ADDON, ns = ...
 ns = ns or {}
 
 ns.Reagents = ns.Reagents or {}
+local wipeTable = wipe
 
 local PT = LibStub and LibStub("LibPeriodicTable-3.1", true)
 
@@ -174,8 +175,10 @@ end
 
 function ns.Reagents.RecomputeReagentsOnly(addon)
   if not (addon and addon.cache and addon.cache.reagents) then return end
-  addon.cache.reagentsList = {}
-  addon.cache.reagentsDisplay = {}
+  addon.cache.reagentsList = addon.cache.reagentsList or {}
+  addon.cache.reagentsDisplay = addon.cache.reagentsDisplay or {}
+  wipeTable(addon.cache.reagentsList)
+  wipeTable(addon.cache.reagentsDisplay)
   ns.Reagents.BuildDisplayOnly(addon)
 end
 

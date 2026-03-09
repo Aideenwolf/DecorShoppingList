@@ -6,6 +6,7 @@ ns.Recipes = ns.Recipes or {}
 
 local QUALITY_MODE_ANY = "any"
 local QUALITY_MODE_SPECIFIC = "specific"
+local wipeTable = wipe
 
 local function NormalizeGoalQualityTracking(goal)
   if type(goal) ~= "table" then
@@ -316,7 +317,8 @@ function ns.Recipes.RecomputeDisplayOnly(addon)
   addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
   local collapsed = addon.db.profile.window.collapsed
 
-  addon.cache.recipesDisplay = {}
+  addon.cache.recipesDisplay = addon.cache.recipesDisplay or {}
+  wipeTable(addon.cache.recipesDisplay)
   local byProf = {}
 
   for _, row in ipairs(addon.cache.recipes) do
@@ -408,11 +410,16 @@ end
 
 function ns.Recipes.RecomputeCaches(addon)
   addon.cache = addon.cache or {}
-  addon.cache.recipes = {}
-  addon.cache.recipesDisplay = {}
-  addon.cache.reagents = {}
-  addon.cache.reagentsList = {}
-  addon.cache.reagentsDisplay = {}
+  addon.cache.recipes = addon.cache.recipes or {}
+  addon.cache.recipesDisplay = addon.cache.recipesDisplay or {}
+  addon.cache.reagents = addon.cache.reagents or {}
+  addon.cache.reagentsList = addon.cache.reagentsList or {}
+  addon.cache.reagentsDisplay = addon.cache.reagentsDisplay or {}
+  wipeTable(addon.cache.recipes)
+  wipeTable(addon.cache.recipesDisplay)
+  wipeTable(addon.cache.reagents)
+  wipeTable(addon.cache.reagentsList)
+  wipeTable(addon.cache.reagentsDisplay)
 
   addon.db.profile.window = addon.db.profile.window or {}
   addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}

@@ -25,6 +25,20 @@ function ns.Sorting.CompareNames(a, b)
   return aID < bID
 end
 
+function ns.Sorting.CompareExpansionIDsDesc(a, b)
+  local ae = tonumber(a)
+  local be = tonumber(b)
+
+  if ae == nil then ae = -1 end
+  if be == nil then be = -1 end
+
+  if ae ~= be then
+    return ae > be
+  end
+
+  return false
+end
+
 function ns.Sorting.SortRecipeList(list, mode)
   list = list or {}
   mode = mode or "N"
@@ -32,7 +46,7 @@ function ns.Sorting.SortRecipeList(list, mode)
   if mode == "E" then
     table.sort(list, function(a, b)
       local ae, be = (a.expacID or -1), (b.expacID or -1)
-      if ae ~= be then return ae > be end
+      if ae ~= be then return ns.Sorting.CompareExpansionIDsDesc(ae, be) end
       return ns.Sorting.CompareNames(a, b)
     end)
     return list
@@ -85,7 +99,7 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
 
   local function sortEInner(a, b)
     local ae, be = (a.expacID or -1), (b.expacID or -1)
-    if ae ~= be then return ae > be end
+    if ae ~= be then return ns.Sorting.CompareExpansionIDsDesc(ae, be) end
     local ar, br = rarityKey(a), rarityKey(b)
     if ar ~= br then return ar > br end
     return ns.Sorting.CompareNames(a, b)
@@ -149,9 +163,7 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
     end
 
     table.sort(expacOrder, function(a, b)
-      a = a or -1
-      b = b or -1
-      return a > b
+      return ns.Sorting.CompareExpansionIDsDesc(a, b)
     end)
 
     for _, id in ipairs(expacOrder) do

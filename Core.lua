@@ -224,11 +224,8 @@ function DSL:OnEnable()
   self:RegisterEvent("BANKFRAME_OPENED", "OnBankOpened")
   self:RegisterEvent("BANKFRAME_CLOSED", "OnBankClosed")
   self:RegisterEvent("PLAYERBANKSLOTS_CHANGED", "OnInventoryChanged")
-  self:RegisterEvent("ITEM_DATA_LOAD_RESULT", "OnItemDataLoaded")
-  self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", "OnTradeSkillListUpdate")
   self:RegisterEvent("TRADE_SKILL_SHOW", "OnTradeSkillListUpdate")
   self:RegisterEvent("NEW_RECIPE_LEARNED", "OnTradeSkillListUpdate")
-  self:RegisterEvent("SKILL_LINES_CHANGED", "OnTradeSkillListUpdate")
   self:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "OnInteractionFrameShow")
   self:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "OnInteractionFrameHide")
 
@@ -315,19 +312,6 @@ function DSL:OnPlayerLogout()
   end
 end
 
-function DSL:OnItemDataLoaded()
-  if self.inCombat then
-    self.repaintAfterCombat = true
-    return
-  end
-
-  -- Item data arriving can change cached display names/source classification.
-  -- Use debounced dirty path instead of repaint-only.
-  if ns.ListWindow and ns.ListWindow:IsShown() then
-    self:MarkDirty("full")
-  end
-end
-
 function DSL:OnTradeSkillListUpdate()
   if self.inCombat then
     self.dirtyFlags = self.dirtyFlags or NewDirtyFlags()
@@ -335,13 +319,19 @@ function DSL:OnTradeSkillListUpdate()
     return
   end
 
-  if ns.SnapshotLearnedRecipes and ns.SnapshotLearnedRecipes(self) then
-    self:MarkDirty("full")
-    return
+  if self._dslProfessionRefreshTimer then
+    self:CancelTimer(self._dslProfessionRefreshTimer)
   end
 
-  -- No learned-state change: avoid full rebuild and refresh display only.
-  self:MarkDirty("display")
+  self._dslProfessionRefreshTimer = self:ScheduleTimer(function()
+    self._dslProfessionRefreshTimer = nil
+    if ns.SnapshotLearnedRecipes and ns.SnapshotLearnedRecipes(self) then
+      self:MarkDirty("full")
+      return
+    end
+
+    self:MarkDirty("display")
+  end, 0.05)
 end
 
 function DSL:MarkDirty(reason)

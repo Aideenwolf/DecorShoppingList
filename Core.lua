@@ -93,12 +93,23 @@ local function ResetCountData(addon)
 
         local chars = realmData.chars
         if type(chars) == "table" then
-          for _, entry in pairs(chars) do
+          for charKey, entry in pairs(chars) do
             if type(entry) == "table" then
-              entry.bags = {}
-              entry.bank = {}
-              entry.bagsByQuality = {}
-              entry.bankByQuality = {}
+              chars[charKey] = {
+                recipes = entry.recipes or {},
+                profs = entry.profs or {},
+                lastSeen = entry.lastSeen or 0,
+                lastRecipeScan = entry.lastRecipeScan or 0,
+                className = entry.className,
+                classToken = entry.classToken,
+                items = {},
+                bags = {},
+                bank = {},
+                warbank = {},
+                bagsByQuality = {},
+                bankByQuality = {},
+                warbankByQuality = {},
+              }
             end
           end
         end
@@ -421,7 +432,7 @@ function DSL:SlashCommand(input)
   elseif input == "tracked" then
     PrintTrackedCharacters(self)
     return
-  elseif input == "resetcounts" then
+  elseif input == "resetcounts" or input == "resetcounters" then
     ResetCountData(self)
     return
   elseif input == "reset" then

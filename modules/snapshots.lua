@@ -3,34 +3,56 @@ ns = ns or {}
 
 ns.Snapshots = ns.Snapshots or {}
 
-local function GetCharEntry(addon)
+local function GetRealmEntry(addon)
   addon.db.global.realms = addon.db.global.realms or {}
 
-  local realm, key = ns.Data.playerKey()
-  if not realm or not key then
+  local realm = select(1, ns.Data.playerKey())
+  if not realm then
     return nil
   end
 
   local g = addon.db.global.realms
-  g[realm] = g[realm] or { chars = {} }
-  g[realm].chars[key] = g[realm].chars[key] or {
-    items = {}, bags = {}, bank = {}, warbank = {},
-    bagsByQuality = {}, bankByQuality = {}, warbankByQuality = {},
-    recipes = {}, profs = {}, lastSeen = 0
+  g[realm] = g[realm] or { chars = {}, warbank = {}, warbankByQuality = {} }
+  local realmEntry = g[realm]
+  realmEntry.chars = realmEntry.chars or {}
+  realmEntry.warbank = realmEntry.warbank or {}
+  realmEntry.warbankByQuality = realmEntry.warbankByQuality or {}
+  return realmEntry, realm
+end
+
+local function GetCharEntry(addon)
+  local realmEntry, realm = GetRealmEntry(addon)
+  local _, key = ns.Data.playerKey()
+  if not realm or not key then
+    return nil
+  end
+
+  realmEntry.chars[key] = realmEntry.chars[key] or {
+    items = {}, bags = {}, bank = {},
+    bagsByQuality = {}, bankByQuality = {},
+    recipes = {}, profs = {}, lastSeen = 0,
+    className = nil, classToken = nil,
   }
 
-  local entry = g[realm].chars[key]
+  local entry = realmEntry.chars[key]
   entry.items = entry.items or {}
   entry.bags = entry.bags or {}
   entry.bank = entry.bank or {}
-  entry.warbank = entry.warbank or {}
   entry.bagsByQuality = entry.bagsByQuality or {}
   entry.bankByQuality = entry.bankByQuality or {}
-  entry.warbankByQuality = entry.warbankByQuality or {}
   entry.recipes = entry.recipes or {}
   entry.profs = entry.profs or {}
   entry.lastSeen = entry.lastSeen or 0
   entry.lastRecipeScan = entry.lastRecipeScan or 0
+  do
+    local className, classToken = UnitClass("player")
+    if className and className ~= "" then
+      entry.className = className
+    end
+    if classToken and classToken ~= "" then
+      entry.classToken = classToken
+    end
+  end
   return entry
 end
 
@@ -148,8 +170,8 @@ function ns.Snapshots.AnyCharHasProfession(addon, profName)
   if not addon or not profName or profName == "" or profName == "Unknown" then return false end
 
   local want = ns.Data.NormalizeProfessionName(profName)
-  local realm = GetRealmName() or "UnknownRealm"
-  local realmData = addon.db.global.realms and addon.db.global.realms[realm]
+  local _, realm = GetRealmEntry(addon)
+  local realmData = addon.db.global.realms and realm and addon.db.global.realms[realm]
   if not realmData or not realmData.chars then return false end
 
   for _, entry in pairs(realmData.chars) do
@@ -193,11 +215,13 @@ function ns.Snapshots.ScanCurrentProfessionLearned(addon)
   return changed
 end
 
-function ns.Snapshots.SnapshotCurrentCharacter(addon)
+function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
   if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return end
+  opts = type(opts) == "table" and opts or {}
 
+  local realmEntry = GetRealmEntry(addon)
   local entry = GetCharEntry(addon)
-  if not entry then return end
+  if not realmEntry or not entry then return end
   entry.lastSeen = time()
 
   local function addCount(dest, itemID, count)
@@ -213,9 +237,9 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
   end
 
   local function scanBag(bagID, dest, destByQuality)
-    if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then return end
+    if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then return false end
     local ok, slots = pcall(C_Container.GetContainerNumSlots, bagID)
-    if not ok or type(slots) ~= "number" or slots <= 0 then return end
+    if not ok or type(slots) ~= "number" or slots <= 0 then return false end
 
     for slot = 1, slots do
       local info = C_Container.GetContainerItemInfo(bagID, slot)
@@ -224,6 +248,7 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
         addQualityCount(destByQuality, info.itemID, ns.Data.GetTrackedQualityFromContainerItem(bagID, slot, info), info.stackCount)
       end
     end
+    return true
   end
 
   local function GetAccountBankTabBagIDs()
@@ -241,25 +266,39 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
     return out
   end
 
-  entry.bags = {}
-  entry.bagsByQuality = {}
+  local newBags, newBagsByQuality = {}, {}
+  local sawBags = false
   for bag = 0, 4 do
-    scanBag(bag, entry.bags, entry.bagsByQuality)
+    sawBags = scanBag(bag, newBags, newBagsByQuality) or sawBags
   end
-  scanBag(5, entry.bags, entry.bagsByQuality)
+  sawBags = scanBag(5, newBags, newBagsByQuality) or sawBags
+  if sawBags then
+    entry.bags = newBags
+    entry.bagsByQuality = newBagsByQuality
+  end
 
-  local bankOpen = (BankFrame and BankFrame:IsShown()) or (ReagentBankFrame and ReagentBankFrame:IsShown())
+  local bankOpen = false
+  if opts.forceWarbank and not opts.forceBank then
+    bankOpen = false
+  else
+    bankOpen = opts.forceBank
+        or ((BankFrame and BankFrame:IsShown()) or (ReagentBankFrame and ReagentBankFrame:IsShown()))
+  end
   if bankOpen then
-    entry.bank = {}
-    entry.bankByQuality = {}
-    scanBag(-1, entry.bank, entry.bankByQuality)
+    local newBank, newBankByQuality = {}, {}
+    local sawBank = false
+    sawBank = scanBag(-1, newBank, newBankByQuality) or sawBank
     for bag = 6, 12 do
-      scanBag(bag, entry.bank, entry.bankByQuality)
+      sawBank = scanBag(bag, newBank, newBankByQuality) or sawBank
     end
-    scanBag(-3, entry.bank, entry.bankByQuality)
+    sawBank = scanBag(-3, newBank, newBankByQuality) or sawBank
+    if sawBank then
+      entry.bank = newBank
+      entry.bankByQuality = newBankByQuality
+    end
   end
 
-  local warbankOpen = false
+  local warbankOpen = opts.forceWarbank and true or false
   if C_Bank and C_Bank.IsAccountBankOpen then
     local ok, v = pcall(C_Bank.IsAccountBankOpen)
     warbankOpen = (ok and v) and true or false
@@ -268,10 +307,14 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon)
   if warbankOpen or bankOpen then
     local tabBagIDs = GetAccountBankTabBagIDs()
     if #tabBagIDs > 0 then
-      entry.warbank = {}
-      entry.warbankByQuality = {}
+      local newWarbank, newWarbankByQuality = {}, {}
+      local sawWarbank = false
       for _, bagID in ipairs(tabBagIDs) do
-        scanBag(bagID, entry.warbank, entry.warbankByQuality)
+        sawWarbank = scanBag(bagID, newWarbank, newWarbankByQuality) or sawWarbank
+      end
+      if sawWarbank then
+        realmEntry.warbank = newWarbank
+        realmEntry.warbankByQuality = newWarbankByQuality
       end
     end
   end
@@ -322,7 +365,7 @@ function ns.Snapshots.BuildAltItemSums(addon)
   addon.cache = addon.cache or {}
   addon.cache.altItemSums = {}
 
-  local realm = ns.Data.playerKey()
+  local realm = select(1, ns.Data.playerKey())
   local realmData = addon.db.global.realms[realm]
   local chars = realmData and realmData.chars
   if not chars then return end
@@ -342,9 +385,144 @@ function ns.Snapshots.BuildAltItemSums(addon)
     if type(entry) == "table" then
       addTable(entry.bags)
       addTable(entry.bank)
-      addTable(entry.warbank)
     end
   end
+  addTable(realmData.warbank)
+end
+
+function ns.Snapshots.GetTrackedCharacters(addon)
+  if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return {}, nil end
+
+  local realm = select(1, ns.Data.playerKey())
+  local _, currentKey = ns.Data.playerKey()
+  local _, currentClassToken = UnitClass("player")
+  local realmData = realm and addon.db.global.realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return {}, realm end
+
+  local out = {}
+  for charKey, entry in pairs(chars) do
+    if type(entry) == "table" then
+      local bagCount = 0
+      local bankCount = 0
+      local recipeCount = 0
+
+      for _, count in pairs(entry.bags or {}) do
+        if type(count) == "number" and count > 0 then
+          bagCount = bagCount + count
+        end
+      end
+      for _, count in pairs(entry.bank or {}) do
+        if type(count) == "number" and count > 0 then
+          bankCount = bankCount + count
+        end
+      end
+      for _, learned in pairs(entry.recipes or {}) do
+        if learned == true then
+          recipeCount = recipeCount + 1
+        end
+      end
+
+      table.insert(out, {
+        charKey = charKey,
+        charName = tostring(charKey or ""):match("^([^-]+)") or tostring(charKey or "?"),
+        className = entry.className,
+        classToken = entry.classToken or ((charKey == currentKey) and currentClassToken or nil),
+        lastSeen = tonumber(entry.lastSeen) or 0,
+        lastRecipeScan = tonumber(entry.lastRecipeScan) or 0,
+        bagCount = bagCount,
+        bankCount = bankCount,
+        recipeCount = recipeCount,
+      })
+    end
+  end
+
+  table.sort(out, function(a, b)
+    if a.lastSeen ~= b.lastSeen then
+      return a.lastSeen > b.lastSeen
+    end
+    return tostring(a.charKey or "") < tostring(b.charKey or "")
+  end)
+
+  return out, realm
+end
+
+function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
+  if not (addon and addon.db and addon.db.global and addon.db.global.realms and itemID) then
+    return {}, 0
+  end
+
+  targetQuality = ns.Data.NormalizeTrackedQuality(targetQuality)
+
+  local realm = select(1, ns.Data.playerKey())
+  local _, currentKey = ns.Data.playerKey()
+  local _, currentClassToken = UnitClass("player")
+  local realmData = realm and addon.db.global.realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return {}, 0 end
+
+  local function sumQualityBucket(bucket)
+    local total = 0
+    local byItem = type(bucket) == "table" and bucket[itemID]
+    if type(byItem) == "table" then
+      if targetQuality then
+        total = total + (byItem[targetQuality] or 0)
+      else
+        for quality = 1, 3 do
+          total = total + (byItem[quality] or 0)
+        end
+      end
+    end
+    return total
+  end
+
+  local function pickCount(flatCount, qualityCount)
+    if qualityCount and qualityCount > 0 then
+      return qualityCount
+    end
+    return flatCount or 0
+  end
+
+  local rows = {}
+  for charKey, entry in pairs(chars) do
+    if type(entry) == "table" then
+      local bags = pickCount(
+        type(entry.bags) == "table" and (entry.bags[itemID] or 0) or 0,
+        sumQualityBucket(entry.bagsByQuality)
+      )
+      local bank = pickCount(
+        type(entry.bank) == "table" and (entry.bank[itemID] or 0) or 0,
+        sumQualityBucket(entry.bankByQuality)
+      )
+      local total = bags + bank
+
+      if total > 0 then
+        table.insert(rows, {
+          charKey = charKey,
+          charName = tostring(charKey or ""):match("^([^-]+)") or tostring(charKey or "?"),
+          classToken = entry.classToken or ((charKey == currentKey) and currentClassToken or nil),
+          lastSeen = tonumber(entry.lastSeen) or 0,
+          bags = bags,
+          bank = bank,
+          total = total,
+        })
+      end
+    end
+  end
+
+  table.sort(rows, function(a, b)
+    if a.total ~= b.total then
+      return a.total > b.total
+    end
+    return tostring(a.charKey or "") < tostring(b.charKey or "")
+  end)
+
+  local warbank = pickCount(
+    type(realmData.warbank) == "table" and (realmData.warbank[itemID] or 0) or 0,
+    sumQualityBucket(realmData.warbankByQuality)
+  )
+
+  return rows, warbank
 end
 
 ns.GetPlayerProfessionSet = ns.Snapshots.GetPlayerProfessionSet
@@ -355,3 +533,5 @@ ns.SnapshotLearnedRecipes = ns.Snapshots.SnapshotLearnedRecipes
 ns.IsRecipeLearned = ns.Snapshots.IsRecipeLearned
 ns.ScanCurrentProfessionLearned = ns.Snapshots.ScanCurrentProfessionLearned
 ns.BuildAltItemSums = ns.Snapshots.BuildAltItemSums
+ns.GetTrackedCharacters = ns.Snapshots.GetTrackedCharacters
+ns.GetTrackedItemBreakdown = ns.Snapshots.GetTrackedItemBreakdown

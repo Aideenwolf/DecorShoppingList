@@ -80,6 +80,12 @@ local QUALITY_LABELS = {
   [3] = "Gold",
 }
 
+local QUALITY_ATLAS_CANDIDATES = {
+  [1] = { "Professions-Icon-Quality-Tier1-Small", "Professions-Icon-Quality-Tier1" },
+  [2] = { "Professions-Icon-Quality-Tier2-Small", "Professions-Icon-Quality-Tier2" },
+  [3] = { "Professions-Icon-Quality-Tier3-Small", "Professions-Icon-Quality-Tier3" },
+}
+
 local function GetTrackedQualityLabel(quality)
   quality = NormalizeTrackedQuality(quality)
   return quality and QUALITY_LABELS[quality] or nil
@@ -288,6 +294,7 @@ ns.Data.GetItemNameFast = GetItemNameFast
 ns.Data.GetItemQuality = GetItemQuality
 ns.Data.NormalizeTrackedQuality = NormalizeTrackedQuality
 ns.Data.GetTrackedQualityLabel = GetTrackedQualityLabel
+ns.Data.QUALITY_ATLAS_CANDIDATES = QUALITY_ATLAS_CANDIDATES
 ns.Data.GetTrackedQualityFromItemLink = GetTrackedQualityFromItemLink
 ns.Data.GetTrackedQualityFromContainerItem = GetTrackedQualityFromContainerItem
 ns.Data.ColorizeByQuality = ColorizeByQuality
@@ -328,22 +335,58 @@ function ns.GetHaveCount(addon, itemID)
   local realmData = realms and realms[realm]
   local chars = realmData and realmData.chars
   if not chars then return 0 end
+  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
+  local realmWarbank = (realmData and realmData.warbank) or {}
+  local realmWarbankByQuality = (realmData and realmData.warbankByQuality) or {}
 
-  local function countEntry(entry)
+  local function sumQualityBucket(bucket)
+    local total = 0
+    local byItem = type(bucket) == "table" and bucket[itemID]
+    if type(byItem) == "table" then
+      for quality = 1, 3 do
+        total = total + (byItem[quality] or 0)
+      end
+    end
+    return total
+  end
+
+  local function countEntryFlat(entry)
     if type(entry) ~= "table" then return 0 end
     local bags = entry.bags or {}
     local bank = entry.bank or {}
-    local warbank = entry.warbank or {}
-    return (bags[itemID] or 0) + (bank[itemID] or 0) + (warbank[itemID] or 0)
+    return (bags[itemID] or 0) + (bank[itemID] or 0)
   end
 
-  -- HaveTotal = HaveCurrent + HaveAlt (+ Warbank later, if added)
-  local total = 0
+  local function countEntryByQuality(entry)
+    if type(entry) ~= "table" then return 0 end
+    return sumQualityBucket(entry.bagsByQuality) + sumQualityBucket(entry.bankByQuality)
+  end
+
+  local function pickAggregateCount(flatTotal, qualityTotal)
+    -- Prefer per-quality totals when present. They are the authoritative path for
+    -- quality-capable items and avoid stale legacy flat counts from older snapshots.
+    if qualityTotal and qualityTotal > 0 then
+      return qualityTotal
+    end
+    return flatTotal or 0
+  end
+
+  if not includeAlts then
+    local flatTotal = countEntryFlat(chars[key]) + (realmWarbank[itemID] or 0)
+    local qualityTotal = countEntryByQuality(chars[key]) + sumQualityBucket(realmWarbankByQuality)
+    return pickAggregateCount(flatTotal, qualityTotal)
+  end
+
+  local flatTotal = 0
+  local qualityTotal = 0
   for _, entry in pairs(chars) do
-    total = total + countEntry(entry)
+    flatTotal = flatTotal + countEntryFlat(entry)
+    qualityTotal = qualityTotal + countEntryByQuality(entry)
   end
 
-  return total
+  flatTotal = flatTotal + (realmWarbank[itemID] or 0)
+  qualityTotal = qualityTotal + sumQualityBucket(realmWarbankByQuality)
+  return pickAggregateCount(flatTotal, qualityTotal)
 end
 
 function ns.GetHaveCountByQuality(addon, itemID, quality)
@@ -351,16 +394,18 @@ function ns.GetHaveCountByQuality(addon, itemID, quality)
   quality = NormalizeTrackedQuality(quality)
   if not quality then return 0 end
 
-  local realm = ns.Data.playerKey()
+  local realm, key = ns.Data.playerKey()
   local realms = addon.db.global and addon.db.global.realms
   local realmData = realms and realms[realm]
   local chars = realmData and realmData.chars
   if not chars then return 0 end
+  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
+  local realmWarbankByQuality = (realmData and realmData.warbankByQuality) or {}
 
-  local total = 0
-  for _, entry in pairs(chars) do
+  local function countEntry(entry)
+    local total = 0
     if type(entry) == "table" then
-      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality", "warbankByQuality" }) do
+      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality" }) do
         local bucket = entry[bucketName]
         local byItem = type(bucket) == "table" and bucket[itemID]
         if type(byItem) == "table" then
@@ -368,24 +413,38 @@ function ns.GetHaveCountByQuality(addon, itemID, quality)
         end
       end
     end
+    return total
   end
 
-  return total
+  if not includeAlts then
+    local byItem = realmWarbankByQuality[itemID]
+    return countEntry(chars[key]) + ((type(byItem) == "table" and byItem[quality]) or 0)
+  end
+
+  local total = 0
+  for _, entry in pairs(chars) do
+    total = total + countEntry(entry)
+  end
+
+  local byItem = realmWarbankByQuality[itemID]
+  return total + ((type(byItem) == "table" and byItem[quality]) or 0)
 end
 
 function ns.GetHaveQualityBreakdown(addon, itemID)
   local breakdown = { [1] = 0, [2] = 0, [3] = 0 }
   if not (addon and addon.db and itemID) then return breakdown end
 
-  local realm = ns.Data.playerKey()
+  local realm, key = ns.Data.playerKey()
   local realms = addon.db.global and addon.db.global.realms
   local realmData = realms and realms[realm]
   local chars = realmData and realmData.chars
   if not chars then return breakdown end
+  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
+  local realmWarbankByQuality = (realmData and realmData.warbankByQuality) or {}
 
-  for _, entry in pairs(chars) do
+  local function addEntry(entry)
     if type(entry) == "table" then
-      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality", "warbankByQuality" }) do
+      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality" }) do
         local bucket = entry[bucketName]
         local byItem = type(bucket) == "table" and bucket[itemID]
         if type(byItem) == "table" then
@@ -394,6 +453,28 @@ function ns.GetHaveQualityBreakdown(addon, itemID)
           end
         end
       end
+    end
+  end
+
+  if not includeAlts then
+    addEntry(chars[key])
+    local byItem = realmWarbankByQuality[itemID]
+    if type(byItem) == "table" then
+      for quality = 1, 3 do
+        breakdown[quality] = breakdown[quality] + (byItem[quality] or 0)
+      end
+    end
+    return breakdown
+  end
+
+  for _, entry in pairs(chars) do
+    addEntry(entry)
+  end
+
+  local byItem = realmWarbankByQuality[itemID]
+  if type(byItem) == "table" then
+    for quality = 1, 3 do
+      breakdown[quality] = breakdown[quality] + (byItem[quality] or 0)
     end
   end
 

@@ -35,17 +35,7 @@ local function SetGoalQualityTracking(goal, qualityMode, targetQuality)
 end
 
 local function GetGoalDisplayName(name, goal)
-  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
-  if qualityMode ~= QUALITY_MODE_SPECIFIC or not targetQuality then
-    return name
-  end
-
-  local label = ns.Data.GetTrackedQualityLabel(targetQuality)
-  if not label or label == "" then
-    return name
-  end
-
-  return string.format("%s [%s]", tostring(name or ""), label)
+  return name
 end
 
 local function GetTrackedHaveCount(addon, goal, itemID)
@@ -66,6 +56,14 @@ local function GetGoalQualityBreakdown(addon, goal, itemID)
     return { [1] = 0, [2] = 0, [3] = 0 }
   end
   return ns.GetHaveQualityBreakdown(addon, itemID)
+end
+
+local function MakeReagentKey(itemID, targetQuality)
+  targetQuality = ns.Data.NormalizeTrackedQuality(targetQuality)
+  if targetQuality then
+    return tostring(itemID) .. ":" .. tostring(targetQuality)
+  end
+  return tostring(itemID)
 end
 
 local function GetRecipeDisplayName(addon, goal)
@@ -236,7 +234,7 @@ function ns.Recipes.ApplyCompletionByInventoryDelta(addon)
   end
 end
 
-function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, depth)
+function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, depth, goal)
   if depth > 20 then return end
   if not recipeID or desiredItems <= 0 then return end
 
@@ -283,11 +281,27 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
   local craftsNeeded = ns.Data.ceilDiv(desiredItems, yieldMin)
   if craftsNeeded <= 0 then return end
 
+  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+  if qualityMode ~= QUALITY_MODE_SPECIFIC then
+    targetQuality = nil
+  end
+
   for _, r in ipairs(reagentsList) do
     if r and r.itemID and r.qty then
       local itemID = r.itemID
       local qty = (r.qty * craftsNeeded)
-      addon.cache.reagents[itemID] = (addon.cache.reagents[itemID] or 0) + qty
+      local key = MakeReagentKey(itemID, targetQuality)
+      local entry = addon.cache.reagents[key]
+      if type(entry) ~= "table" then
+        entry = {
+          key = key,
+          itemID = itemID,
+          targetQuality = targetQuality,
+          need = 0,
+        }
+        addon.cache.reagents[key] = entry
+      end
+      entry.need = (entry.need or 0) + qty
     end
   end
 end
@@ -609,7 +623,7 @@ function ns.Recipes.RecomputeCaches(addon)
           if entry then
             goal.needsScan = nil
             row.needsScan = nil
-            ns.AccumulateReagentsForRecipe(addon, goal.recipeID, goal.remaining or 0, 0)
+            ns.AccumulateReagentsForRecipe(addon, goal.recipeID, goal.remaining or 0, 0, goal)
           else
             goal.needsScan = true
             row.needsScan = true

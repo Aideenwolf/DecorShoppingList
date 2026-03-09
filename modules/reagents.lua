@@ -125,31 +125,38 @@ function ns.Reagents.BuildDisplayOnly(addon)
   local collapsed = (addon.db.profile.window and addon.db.profile.window.collapsed) or {}
   local flat = {}
 
-  for itemID, need in pairs(addon.cache.reagents or {}) do
-    local have = ns.GetHaveCount(addon, itemID)
-    local remaining = math.max(0, (need or 0) - (have or 0))
+  for _, reagent in pairs(addon.cache.reagents or {}) do
+    local itemID = type(reagent) == "table" and reagent.itemID or nil
+    local targetQuality = type(reagent) == "table" and ns.Data.NormalizeTrackedQuality(reagent.targetQuality) or nil
+    local need = type(reagent) == "table" and reagent.need or 0
+    if itemID then
+      local have = targetQuality and ns.GetHaveCountByQuality(addon, itemID, targetQuality) or ns.GetHaveCount(addon, itemID)
+      local remaining = math.max(0, (need or 0) - (have or 0))
     local rawName = ns.Data.GetItemNameWithCache(addon, itemID) or ("Item " .. itemID)
     local isComplete = (remaining <= 0)
-    local displayName = isComplete and rawName or ns.Data.ColorizeByQuality(itemID, rawName)
-    local rarity = ns.Data.GetItemQuality(itemID) or -1
-    local expacID = ns.Data.GetItemExpansionID(itemID)
-    local expacName = ns.Data.GetExpansionName(expacID)
-    local source, subSource = ns.Reagents.GetSource(addon, itemID)
+      local displayName = isComplete and rawName or ns.Data.ColorizeByQuality(itemID, rawName)
+      local rarity = ns.Data.GetItemQuality(itemID) or -1
+      local expacID = ns.Data.GetItemExpansionID(itemID)
+      local expacName = ns.Data.GetExpansionName(expacID)
+      local source, subSource = ns.Reagents.GetSource(addon, itemID)
 
-    table.insert(flat, {
-      itemID = itemID,
-      name = displayName,
-      rawName = rawName,
-      need = need or 0,
-      have = have or 0,
-      remaining = remaining,
-      rarity = rarity,
-      expacID = expacID,
-      expacName = expacName,
-      source = source,
-      subSource = subSource,
-      isComplete = isComplete,
-    })
+      table.insert(flat, {
+        reagentKey = reagent.key or tostring(itemID),
+        itemID = itemID,
+        targetQuality = targetQuality,
+        name = displayName,
+        rawName = rawName,
+        need = need or 0,
+        have = have or 0,
+        remaining = remaining,
+        rarity = rarity,
+        expacID = expacID,
+        expacName = expacName,
+        source = source,
+        subSource = subSource,
+        isComplete = isComplete,
+      })
+    end
   end
 
   local mode = (addon.db.profile.window and addon.db.profile.window.reagentSort) or "E"

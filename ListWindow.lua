@@ -21,6 +21,49 @@ local ICON_SHIFT = "|cffffd100SHIFT|r"
 local ICON_CTRL  = "|cffffd100CTRL|r"
 local ICON_ALT   = "|cffffd100ALT|r"
 
+local function ColorizeCharacterName(name, classToken)
+  if not name or name == "" then
+    return name or ""
+  end
+
+  if C_ClassColor and C_ClassColor.GetClassColor and classToken then
+    local c = C_ClassColor.GetClassColor(classToken)
+    if c and c.WrapTextInColorCode then
+      return c:WrapTextInColorCode(name)
+    end
+  end
+
+  local palette = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)
+  local c = classToken and palette and palette[classToken]
+  if c then
+    local r = c.r or c.R or 1
+    local g = c.g or c.G or 1
+    local b = c.b or c.B or 1
+    return ("|cff%02x%02x%02x%s|r"):format(r * 255, g * 255, b * 255, name)
+  end
+
+  return name
+end
+
+local function ApplyQualityIcon(texture, quality)
+  if not texture then return false end
+  quality = ns.Data.NormalizeTrackedQuality(quality)
+  if not quality then
+    texture:Hide()
+    return false
+  end
+
+  for _, atlas in ipairs((ns.Data.QUALITY_ATLAS_CANDIDATES and ns.Data.QUALITY_ATLAS_CANDIDATES[quality]) or {}) do
+    if texture.SetAtlas and texture:SetAtlas(atlas, true) then
+      texture:Show()
+      return true
+    end
+  end
+
+  texture:Hide()
+  return false
+end
+
 local function GetVisibleRows(f)
   local scroll = f and f.Scroll
   local h = scroll and scroll.GetHeight and scroll:GetHeight() or 0
@@ -431,6 +474,10 @@ function ns.InitListWindow(addon)
 	  row.Icon:SetPoint("LEFT", row.StatusIcon, "RIGHT", 2, 0)
 	  row.Icon:Hide()
 
+    row.QualityIcon = row:CreateTexture(nil, "ARTWORK")
+    row.QualityIcon:SetSize(12, 12)
+    row.QualityIcon:Hide()
+
     row.Name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4, 0)
     row.Name:SetJustifyH("LEFT")
@@ -438,6 +485,21 @@ function ns.InitListWindow(addon)
     row.Val = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     row.Val:SetPoint("RIGHT", row, "RIGHT", -2, 0)
     row.Val:SetJustifyH("RIGHT")
+
+    row.HeaderShade = row:CreateTexture(nil, "BACKGROUND")
+    row.HeaderShade:SetTexture("Interface\\Buttons\\WHITE8x8")
+    row.HeaderShade:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -1)
+    row.HeaderShade:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 1)
+    row.HeaderShade:SetColorTexture(0.04, 0.08, 0.18, 0.32)
+    row.HeaderShade:Hide()
+
+    row.HeaderLine = row:CreateTexture(nil, "ARTWORK")
+    row.HeaderLine:SetTexture("Interface\\Buttons\\WHITE8x8")
+    row.HeaderLine:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+    row.HeaderLine:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+    row.HeaderLine:SetHeight(1)
+    row.HeaderLine:SetColorTexture(0.82, 0.66, 0.10, 0.72)
+    row.HeaderLine:Hide()
 
 -- Tooltip
     row:SetScript("OnEnter", function(self)
@@ -457,9 +519,38 @@ function ns.InitListWindow(addon)
       if view == "reagents" and self.data.itemID then
         GameTooltip:SetItemByID(self.data.itemID)
         GameTooltip:AddLine(" ")
+        if self.data.targetQuality then
+          GameTooltip:AddDoubleLine(
+            L["QUALITY"] or "Quality",
+            ns.Data.GetTrackedQualityLabel(self.data.targetQuality) or tostring(self.data.targetQuality),
+            1, 1, 1, 1, 0.82, 0
+          )
+        end
         GameTooltip:AddDoubleLine(L["HAVE"], tostring(self.data.have or 0), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(L["NEED"], tostring(self.data.need or 0), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
+
+        if ns.GetTrackedItemBreakdown then
+          local owners, warbank = ns.GetTrackedItemBreakdown(addon, self.data.itemID, self.data.targetQuality)
+          if (#owners > 0) or ((warbank or 0) > 0) then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine(L["OWNERSHIP_BREAKDOWN"] or "Ownership Breakdown", 1, 0.82, 0)
+
+            if (warbank or 0) > 0 then
+              GameTooltip:AddDoubleLine(
+                L["WARBANK"] or "Warbank",
+                tostring(warbank or 0),
+                1, 1, 1, 0.9, 0.9, 0.9
+              )
+            end
+
+            for _, info in ipairs(owners) do
+              local label = ColorizeCharacterName(info.charName or info.charKey or "?", info.classToken)
+              local value = string.format("%d Bags | %d Bank", info.bags or 0, info.bank or 0)
+              GameTooltip:AddDoubleLine(label, value, 1, 1, 1, 0.9, 0.9, 0.9)
+            end
+          end
+        end
 
       else
         -- Recipes: show crafted item tooltip
@@ -485,15 +576,6 @@ function ns.InitListWindow(addon)
                 L["QUALITY"] or "Quality",
                 string.format("%s (%d)", qualityLabel, have or 0),
                 1, 1, 1, 1, 0.82, 0
-              )
-              GameTooltip:AddLine(
-                string.format(
-                  "%s %d | %s %d | %s %d",
-                  ns.Data.GetTrackedQualityLabel(1) or "Bronze", breakdown[1] or 0,
-                  ns.Data.GetTrackedQualityLabel(2) or "Silver", breakdown[2] or 0,
-                  ns.Data.GetTrackedQualityLabel(3) or "Gold", breakdown[3] or 0
-                ),
-                0.7, 0.7, 0.7
               )
             else
               GameTooltip:AddDoubleLine(
@@ -688,6 +770,9 @@ end
 
 local function RenderHeaderRow(row, entry, view, cHeader, collapsedMap)
   row.StatusIcon:Hide()
+  row.QualityIcon:Hide()
+  row.HeaderShade:Show()
+  row.HeaderLine:Show()
 
   local headerIcon = GetHeaderIcon(view, entry)
 
@@ -718,11 +803,13 @@ end
 local function RenderDataRow(row, entry, view, addon)
   local ITEM_INDENT = 12
   local indentPx = 12
+  local LEFT_GAP = 4
+  row.HeaderShade:Hide()
+  row.HeaderLine:Hide()
 
   row.Icon:ClearAllPoints()
-  row.Icon:SetPoint("LEFT", row, "LEFT", 2 + ITEM_INDENT, 0)
+  row.QualityIcon:ClearAllPoints()
   row.StatusIcon:ClearAllPoints()
-  row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -10, 0)
 
   local tex
   if view == "reagents" and entry.itemID then
@@ -733,9 +820,12 @@ local function RenderDataRow(row, entry, view, addon)
     tex = entry.iconTexture
   end
 
+  local isUnknownRecipe = (view == "recipes" and entry.recipeID and (not ns.IsRecipeLearned(addon, entry.recipeID)))
+
   if view == "reagents" and entry.isComplete then
     row.StatusIcon:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
     row.StatusIcon:Show()
+    row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -22, 0)
   else
     row.StatusIcon:Hide()
   end
@@ -747,19 +837,54 @@ local function RenderDataRow(row, entry, view, addon)
     row.Icon:Hide()
   end
 
+  local showQualityIcon = ApplyQualityIcon(row.QualityIcon, entry.targetQuality)
+
   row.Name:ClearAllPoints()
-  if row.Icon:IsShown() then
-    row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 4 + indentPx, 0)
+  if view == "recipes" then
+    local iconLeft = 2 + ITEM_INDENT
+    local markerWidth = 18
+    row.Icon:SetPoint("LEFT", row, "LEFT", iconLeft + markerWidth, 0)
+
+    if isUnknownRecipe then
+      row.StatusIcon:SetTexture("Interface\\RaidFrame\\ReadyCheck-NotReady")
+      row.StatusIcon:SetPoint("LEFT", row, "LEFT", iconLeft, 0)
+      row.StatusIcon:Show()
+    else
+      row.StatusIcon:Hide()
+    end
+
+    if row.Icon:IsShown() then
+      row.Name:SetPoint("LEFT", row.Icon, "RIGHT", LEFT_GAP + indentPx, 0)
+    else
+      row.Name:SetPoint("LEFT", row, "LEFT", iconLeft + markerWidth + indentPx, 0)
+    end
+  elseif view == "reagents" and row.Icon:IsShown() then
+    local itemLeft = 2 + ITEM_INDENT + 16
+    row.Icon:SetPoint("LEFT", row, "LEFT", itemLeft, 0)
+    if showQualityIcon then
+      row.QualityIcon:SetPoint("RIGHT", row.Icon, "LEFT", -LEFT_GAP, 0)
+      row.Name:SetPoint("LEFT", row.Icon, "RIGHT", LEFT_GAP + indentPx, 0)
+    else
+      row.QualityIcon:Hide()
+      row.Name:SetPoint("LEFT", row.Icon, "RIGHT", LEFT_GAP + indentPx, 0)
+    end
+  elseif row.Icon:IsShown() then
+    row.Icon:SetPoint("LEFT", row, "LEFT", 2 + ITEM_INDENT, 0)
+    row.Name:SetPoint("LEFT", row.Icon, "RIGHT", LEFT_GAP + indentPx, 0)
   else
     row.Name:SetPoint("LEFT", row, "LEFT", 2 + indentPx, 0)
   end
 
-  if view == "recipes" and entry.recipeID and (not ns.IsRecipeLearned(addon, entry.recipeID)) then
-    row.Name:SetText("|TInterface\\RaidFrame\\ReadyCheck-NotReady:14:14|t " .. (entry.name or ""))
-  else
-    row.Name:SetText(entry.name or "")
+  row.Name:SetText(entry.name or "")
+
+  if view == "recipes" and showQualityIcon then
+    local nameWidth = row.Name:GetStringWidth() or 0
+    row.QualityIcon:SetPoint("LEFT", row.Name, "LEFT", nameWidth + 6, 0)
   end
 
+  if view ~= "reagents" and not isUnknownRecipe then
+    row.StatusIcon:SetPoint("RIGHT", row, "RIGHT", -10, 0)
+  end
   row.Val:SetText(tostring(entry.remaining or 0))
 
   local isZero = (entry.remaining or 0) <= 0
@@ -857,6 +982,8 @@ function ns.RefreshListWindow(addon)
 
     if i > visibleRows then
       row.data = nil
+      row.HeaderShade:Hide()
+      row.HeaderLine:Hide()
       row:Hide()
     else
     local idx = i + offset
@@ -864,6 +991,8 @@ function ns.RefreshListWindow(addon)
     row.data = entry
 
     if not entry then
+      row.HeaderShade:Hide()
+      row.HeaderLine:Hide()
       row:Hide()
     else
       row:Show()

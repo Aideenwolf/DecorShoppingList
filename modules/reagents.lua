@@ -131,7 +131,7 @@ function ns.Reagents.BuildDisplayOnly(addon)
     local targetQuality = type(reagent) == "table" and ns.Data.NormalizeTrackedQuality(reagent.targetQuality) or nil
     local need = type(reagent) == "table" and reagent.need or 0
     if itemID then
-      local have = targetQuality and ns.GetHaveCountByQuality(addon, itemID, targetQuality) or ns.GetHaveCount(addon, itemID)
+      local have = targetQuality and ns.GetHaveCountExact(addon, itemID) or ns.GetHaveCountByName(addon, itemID)
       local remaining = math.max(0, (need or 0) - (have or 0))
     local rawName = ns.Data.GetItemNameWithCache(addon, itemID) or ("Item " .. itemID)
     local isComplete = (remaining <= 0)

@@ -421,6 +421,7 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
   end
 
   targetQuality = ns.Data.NormalizeTrackedQuality(targetQuality)
+  local targetName = (not targetQuality and ns.Data.ResolveItemGroupName and ns.Data.ResolveItemGroupName(addon, itemID)) or nil
 
   local realm = select(1, ns.Data.playerKey())
   local _, currentKey = ns.Data.playerKey()
@@ -429,42 +430,33 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
   local chars = realmData and realmData.chars
   if not chars then return {}, 0 end
 
-  local function sumQualityBucket(bucket)
+  local function sumBucket(bucket)
     local total = 0
-    local byItem = type(bucket) == "table" and bucket[itemID]
-    if type(byItem) == "table" then
-      if targetQuality then
-        total = total + (byItem[targetQuality] or 0)
-      else
-        for quality = 1, 3 do
-          total = total + (byItem[quality] or 0)
+    if type(bucket) ~= "table" then
+      return 0
+    end
+
+    if targetQuality then
+      total = total + (bucket[itemID] or 0)
+      return total
+    end
+
+    for candidateItemID, count in pairs(bucket) do
+      if type(candidateItemID) == "number" and type(count) == "number" and count > 0 then
+        local candidateName = ns.Data.ResolveItemGroupName and ns.Data.ResolveItemGroupName(addon, candidateItemID)
+        if candidateName == targetName then
+          total = total + count
         end
       end
     end
     return total
   end
 
-  local function pickCount(flatCount, qualityCount)
-    if targetQuality then
-      return qualityCount or 0
-    end
-    if qualityCount and qualityCount > 0 then
-      return qualityCount
-    end
-    return flatCount or 0
-  end
-
   local rows = {}
   for charKey, entry in pairs(chars) do
     if type(entry) == "table" then
-      local bags = pickCount(
-        type(entry.bags) == "table" and (entry.bags[itemID] or 0) or 0,
-        sumQualityBucket(entry.bagsByQuality)
-      )
-      local bank = pickCount(
-        type(entry.bank) == "table" and (entry.bank[itemID] or 0) or 0,
-        sumQualityBucket(entry.bankByQuality)
-      )
+      local bags = sumBucket(entry.bags)
+      local bank = sumBucket(entry.bank)
       local total = bags + bank
 
       if total > 0 then
@@ -488,10 +480,7 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
     return tostring(a.charKey or "") < tostring(b.charKey or "")
   end)
 
-  local warbank = pickCount(
-    type(realmData.warbank) == "table" and (realmData.warbank[itemID] or 0) or 0,
-    sumQualityBucket(realmData.warbankByQuality)
-  )
+  local warbank = sumBucket(realmData.warbank)
 
   return rows, warbank
 end

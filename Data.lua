@@ -95,8 +95,21 @@ local function GetTrackedQualityFromItemInfo(itemInfo)
   local api = C_TradeSkillUI
   if api then
     for _, fn in pairs({
-      api.GetItemCraftedQualityByItemInfo,
+      api.GetItemReagentQualityInfo,
+      api.GetItemCraftedQualityInfo,
+    }) do
+      if type(fn) == "function" then
+        local ok, info = pcall(fn, itemInfo)
+        local quality = NormalizeTrackedQuality(ok and type(info) == "table" and info.quality or nil)
+        if quality then
+          return quality
+        end
+      end
+    end
+
+    for _, fn in pairs({
       api.GetItemReagentQualityByItemInfo,
+      api.GetItemCraftedQualityByItemInfo,
     }) do
       if type(fn) == "function" then
         local ok, quality = pcall(fn, itemInfo)
@@ -117,15 +130,22 @@ end
 
 local function GetTrackedQualityFromContainerItem(bagID, slot, info)
   local itemLink = info and info.hyperlink
-  local itemID = info and info.itemID
   if (not itemLink or itemLink == "") and C_Container and C_Container.GetContainerItemLink then
     local ok, link = pcall(C_Container.GetContainerItemLink, bagID, slot)
     if ok then
       itemLink = link
     end
   end
+  if (not itemLink or itemLink == "") and ItemLocation and C_Item and C_Item.GetItemLink then
+    local ok, itemLocation = pcall(ItemLocation.CreateFromBagAndSlot, bagID, slot)
+    if ok and itemLocation then
+      local okLink, link = pcall(C_Item.GetItemLink, itemLocation)
+      if okLink then
+        itemLink = link
+      end
+    end
+  end
   return GetTrackedQualityFromItemInfo(itemLink)
-      or GetTrackedQualityFromItemInfo(itemID)
 end
 
 local function ItemSupportsTrackedQuality(itemID)
@@ -266,6 +286,99 @@ local function GetItemNameWithCache(addon, itemID)
   return nil
 end
 
+local function ResolveItemGroupName(addon, itemIDOrName)
+  if type(itemIDOrName) == "string" and itemIDOrName ~= "" then
+    return itemIDOrName
+  end
+  if type(itemIDOrName) == "number" then
+    return GetItemNameWithCache(addon, itemIDOrName)
+  end
+  return nil
+end
+
+local function SumBucketByName(addon, bucket, targetName)
+  if type(bucket) ~= "table" or not targetName or targetName == "" then
+    return 0
+  end
+
+  local total = 0
+  for candidateItemID, count in pairs(bucket) do
+    if type(candidateItemID) == "number" and type(count) == "number" and count > 0 then
+      local candidateName = GetItemNameWithCache(addon, candidateItemID)
+      if candidateName == targetName then
+        total = total + count
+      end
+    end
+  end
+  return total
+end
+
+local function SumBucketExact(bucket, itemID)
+  if type(bucket) ~= "table" or not itemID then
+    return 0
+  end
+  return bucket[itemID] or 0
+end
+
+local function SelectTooltipItemID(addon, itemID, targetQuality)
+  if not (addon and addon.db and itemID) then
+    return itemID
+  end
+
+  targetQuality = NormalizeTrackedQuality(targetQuality)
+  local targetName = ResolveItemGroupName(addon, itemID)
+  if not targetName or targetName == "" then
+    return itemID
+  end
+
+  local realms = addon.db.global and addon.db.global.realms
+  local realm = select(1, playerKey())
+  local realmData = realms and realms[realm]
+  if type(realmData) ~= "table" then
+    return itemID
+  end
+
+  local bestID = nil
+  local bestQuality = nil
+
+  local function considerBucket(bucket)
+    if type(bucket) ~= "table" then return end
+    for candidateItemID, count in pairs(bucket) do
+      if type(candidateItemID) == "number" and type(count) == "number" and count > 0 then
+        local candidateName = ResolveItemGroupName(addon, candidateItemID)
+        if candidateName == targetName then
+          local candidateQuality = NormalizeTrackedQuality(GetTrackedQualityFromItemInfo(candidateItemID))
+          if targetQuality then
+            if candidateQuality == targetQuality then
+              if not bestID or candidateItemID < bestID then
+                bestID = candidateItemID
+                bestQuality = candidateQuality
+              end
+            end
+          else
+            local compareQuality = candidateQuality or 0
+            local bestCompare = bestQuality or 0
+            if not bestID or compareQuality < bestCompare or (compareQuality == bestCompare and candidateItemID < bestID) then
+              bestID = candidateItemID
+              bestQuality = candidateQuality
+            end
+          end
+        end
+      end
+    end
+  end
+
+  for _, entry in pairs((realmData and realmData.chars) or {}) do
+    if type(entry) == "table" then
+      considerBucket(entry.bags)
+      considerBucket(entry.bank)
+    end
+  end
+  considerBucket(realmData.warbank)
+
+  return bestID or itemID
+end
+
 local function NormalizeProfessionName(name)
   if not name or name == "" then return "Unknown" end
 
@@ -316,6 +429,8 @@ ns.Data.GetRecipeSchematicSafe = GetRecipeSchematicSafe
 ns.Data.EnsureRecipeCache = EnsureRecipeCache
 ns.Data.EnsureItemNameCache = EnsureItemNameCache
 ns.Data.GetItemNameWithCache = GetItemNameWithCache
+ns.Data.ResolveItemGroupName = ResolveItemGroupName
+ns.Data.SelectTooltipItemID = SelectTooltipItemID
 ns.Data.NormalizeProfessionName = NormalizeProfessionName
 
 -- -------------------------
@@ -397,6 +512,63 @@ function ns.GetHaveCount(addon, itemID)
   flatTotal = flatTotal + (realmWarbank[itemID] or 0)
   qualityTotal = qualityTotal + sumQualityBucket(realmWarbankByQuality)
   return pickAggregateCount(flatTotal, qualityTotal)
+end
+
+function ns.GetHaveCountExact(addon, itemID)
+  if not (addon and addon.db and itemID) then return 0 end
+
+  local realm, key = playerKey()
+  local realms = addon.db.global and addon.db.global.realms
+  local realmData = realms and realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return 0 end
+  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
+  local realmWarbank = (realmData and realmData.warbank) or {}
+
+  local function countEntry(entry)
+    if type(entry) ~= "table" then return 0 end
+    return SumBucketExact(entry.bags, itemID) + SumBucketExact(entry.bank, itemID)
+  end
+
+  if not includeAlts then
+    return countEntry(chars[key]) + SumBucketExact(realmWarbank, itemID)
+  end
+
+  local total = 0
+  for _, entry in pairs(chars) do
+    total = total + countEntry(entry)
+  end
+  return total + SumBucketExact(realmWarbank, itemID)
+end
+
+function ns.GetHaveCountByName(addon, itemIDOrName)
+  if not (addon and addon.db and itemIDOrName) then return 0 end
+
+  local targetName = ResolveItemGroupName(addon, itemIDOrName)
+  if not targetName or targetName == "" then return 0 end
+
+  local realm, key = playerKey()
+  local realms = addon.db.global and addon.db.global.realms
+  local realmData = realms and realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return 0 end
+  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
+  local realmWarbank = (realmData and realmData.warbank) or {}
+
+  local function countEntry(entry)
+    if type(entry) ~= "table" then return 0 end
+    return SumBucketByName(addon, entry.bags, targetName) + SumBucketByName(addon, entry.bank, targetName)
+  end
+
+  if not includeAlts then
+    return countEntry(chars[key]) + SumBucketByName(addon, realmWarbank, targetName)
+  end
+
+  local total = 0
+  for _, entry in pairs(chars) do
+    total = total + countEntry(entry)
+  end
+  return total + SumBucketByName(addon, realmWarbank, targetName)
 end
 
 function ns.GetHaveCountByQuality(addon, itemID, quality)

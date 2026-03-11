@@ -30,6 +30,8 @@ end
 -- Tracks the last recipe the player viewed/selected in any professions UI (normal or linked)
 local currentRecipeID = nil
 local RefreshTrackWidget
+local QueueProfessionWidgetRefresh
+local HookSchematicForm
 local QUALITY_ATLAS_CANDIDATES = {
   [1] = { "Professions-Icon-Quality-Tier1-Small", "Professions-Icon-Quality-Tier1" },
   [2] = { "Professions-Icon-Quality-Tier2-Small", "Professions-Icon-Quality-Tier2" },
@@ -273,7 +275,7 @@ local function GetActiveSchematicForm()
   return nil
 end
 
-local function QueueProfessionWidgetRefresh(addon, delay, clearRecipeID)
+QueueProfessionWidgetRefresh = function(addon, delay, clearRecipeID)
   if not addon then return end
   if addon.inCombat or InCombatLockdown() then return end
   if clearRecipeID then
@@ -292,7 +294,7 @@ local function QueueProfessionWidgetRefresh(addon, delay, clearRecipeID)
   end, delay or 0.05)
 end
 
-local function HookSchematicForm(sf, addon)
+HookSchematicForm = function(sf, addon)
   if not (sf and addon) then return end
   if sf._dslTrackHooksInstalled then return end
   sf._dslTrackHooksInstalled = true

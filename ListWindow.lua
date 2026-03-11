@@ -517,15 +517,10 @@ function ns.InitListWindow(addon)
 
       -- Reagents: show item tooltip + counts (keep existing info)
       if view == "reagents" and self.data.itemID then
-        GameTooltip:SetItemByID(self.data.itemID)
+        local tooltipItemID = (ns.Data.SelectTooltipItemID and ns.Data.SelectTooltipItemID(addon, self.data.itemID, self.data.targetQuality))
+          or self.data.itemID
+        GameTooltip:SetItemByID(tooltipItemID)
         GameTooltip:AddLine(" ")
-        if self.data.targetQuality then
-          GameTooltip:AddDoubleLine(
-            L["QUALITY"] or "Quality",
-            ns.Data.GetTrackedQualityLabel(self.data.targetQuality) or tostring(self.data.targetQuality),
-            1, 1, 1, 1, 0.82, 0
-          )
-        end
         GameTooltip:AddDoubleLine(L["HAVE"], tostring(self.data.have or 0), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(L["NEED"], tostring(self.data.need or 0), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)

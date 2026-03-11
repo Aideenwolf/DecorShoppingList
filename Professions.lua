@@ -195,6 +195,7 @@ local function ensureRecipeEventHook()
   local f = CreateFrame("Frame")
   f:RegisterEvent("OPEN_RECIPE_RESPONSE")     -- often fires in normal mode
   f:RegisterEvent("TRADE_SKILL_SHOW")         -- profession UI opened
+  f:RegisterEvent("TRADE_SKILL_LIST_UPDATE")  -- recipe selection changed / schematic refreshed
   f:RegisterEvent("TRADE_SKILL_CLOSE")
 
   local function syncTrackWidget()
@@ -222,6 +223,12 @@ local function ensureRecipeEventHook()
     end, 0.05)
   end
 
+  local function refreshWidgetOnly()
+    local addon = ns._dslAddonRef
+    if not addon then return end
+    QueueProfessionWidgetRefresh(addon, 0.05, false)
+  end
+
   f:SetScript("OnEvent", function(_, event, recipeID)
     if event == "OPEN_RECIPE_RESPONSE" then
       if type(recipeID) == "number" then
@@ -233,6 +240,11 @@ local function ensureRecipeEventHook()
 
     if event == "TRADE_SKILL_SHOW" then
       syncTrackWidget()
+      return
+    end
+
+    if event == "TRADE_SKILL_LIST_UPDATE" then
+      refreshWidgetOnly()
       return
     end
 
@@ -261,21 +273,71 @@ local function GetActiveSchematicForm()
   return nil
 end
 
-local function GetSelectedRecipeID()
-  if C_TradeSkillUI and C_TradeSkillUI.GetSelectedRecipeID then
-    local ok, rid = pcall(C_TradeSkillUI.GetSelectedRecipeID)
-    if ok and type(rid) == "number" and rid > 0 then
-      currentRecipeID = rid
-      return rid
+local function QueueProfessionWidgetRefresh(addon, delay, clearRecipeID)
+  if not addon then return end
+  if addon.inCombat or InCombatLockdown() then return end
+  if clearRecipeID then
+    currentRecipeID = nil
+  end
+  if addon._dslWidgetRefreshTimer then
+    addon:CancelTimer(addon._dslWidgetRefreshTimer)
+  end
+  addon._dslWidgetRefreshTimer = addon:ScheduleTimer(function()
+    addon._dslWidgetRefreshTimer = nil
+    if addon.inCombat or InCombatLockdown() then return end
+    if ns._dslTryAttachTrackWidget then
+      ns._dslTryAttachTrackWidget()
+    end
+    RefreshTrackWidget(addon)
+  end, delay or 0.05)
+end
+
+local function HookSchematicForm(sf, addon)
+  if not (sf and addon) then return end
+  if sf._dslTrackHooksInstalled then return end
+  sf._dslTrackHooksInstalled = true
+
+  local function onRecipeChanged(self)
+    local rid = nil
+    if type(self.GetRecipeInfo) == "function" then
+      local ok, info = pcall(self.GetRecipeInfo, self)
+      if ok and type(info) == "table" and type(info.recipeID) == "number" and info.recipeID > 0 then
+        rid = info.recipeID
+      end
+    end
+    if not rid and type(self.recipeID) == "number" and self.recipeID > 0 then
+      rid = self.recipeID
+    end
+    currentRecipeID = rid
+    QueueProfessionWidgetRefresh(addon, 0.01, not rid)
+  end
+
+  for _, methodName in ipairs({ "SetRecipeInfo", "Init", "Refresh", "UpdateDetailsForRecipe" }) do
+    if type(sf[methodName]) == "function" then
+      hooksecurefunc(sf, methodName, onRecipeChanged)
     end
   end
 
+  sf:HookScript("OnShow", function(self)
+    onRecipeChanged(self)
+  end)
+end
+
+local function GetSelectedRecipeID()
   local sf = GetActiveSchematicForm()
   if sf and type(sf.GetRecipeInfo) == "function" then
     local ok, info = pcall(sf.GetRecipeInfo, sf)
     if ok and type(info) == "table" and type(info.recipeID) == "number" then
       currentRecipeID = info.recipeID
       return info.recipeID
+    end
+  end
+
+  if C_TradeSkillUI and C_TradeSkillUI.GetSelectedRecipeID then
+    local ok, rid = pcall(C_TradeSkillUI.GetSelectedRecipeID)
+    if ok and type(rid) == "number" and rid > 0 then
+      currentRecipeID = rid
+      return rid
     end
   end
   return currentRecipeID
@@ -613,6 +675,8 @@ local function makeTrackWidget(parent, addon)
       targetQuality = targetQuality,
     })
     w._dslDraftQty = nil
+    w.Qty:SetNumber(q)
+    SetTrackButtonText(w.Track, q)
     RefreshTrackWidget(addon)
   end)
 
@@ -632,12 +696,14 @@ function ns.InitProfessions(addon)
     if not sf then return false end
 
     if sf.DSL_TrackWidget then
+      HookSchematicForm(sf, addon)
       PositionTrackWidget(sf, sf.DSL_TrackWidget)
       RefreshTrackWidget(addon)
       return true
     end
 
     local w = makeTrackWidget(sf, addon)
+    HookSchematicForm(sf, addon)
     PositionTrackWidget(sf, w)
     sf.DSL_TrackWidget = w
     RefreshTrackWidget(addon)

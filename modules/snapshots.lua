@@ -28,14 +28,13 @@ local function GetCharEntry(addon)
   end
 
   realmEntry.chars[key] = realmEntry.chars[key] or {
-    items = {}, bags = {}, bank = {},
+    bags = {}, bank = {},
     bagsByQuality = {}, bankByQuality = {},
     recipes = {}, profs = {}, lastSeen = 0,
     className = nil, classToken = nil,
   }
 
   local entry = realmEntry.chars[key]
-  entry.items = entry.items or {}
   entry.bags = entry.bags or {}
   entry.bank = entry.bank or {}
   entry.bagsByQuality = entry.bagsByQuality or {}
@@ -304,7 +303,7 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
     warbankOpen = (ok and v) and true or false
   end
 
-  if warbankOpen or bankOpen then
+  if warbankOpen then
     local tabBagIDs = GetAccountBankTabBagIDs()
     if #tabBagIDs > 0 then
       local newWarbank, newWarbankByQuality = {}, {}
@@ -357,37 +356,6 @@ function ns.Snapshots.IsRecipeLearned(addon, recipeID)
   end
 
   return false
-end
-
-function ns.Snapshots.BuildAltItemSums(addon)
-  if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return end
-
-  addon.cache = addon.cache or {}
-  addon.cache.altItemSums = {}
-
-  local realm = select(1, ns.Data.playerKey())
-  local realmData = addon.db.global.realms[realm]
-  local chars = realmData and realmData.chars
-  if not chars then return end
-
-  local sums = addon.cache.altItemSums
-
-  local function addTable(t)
-    if type(t) ~= "table" then return end
-    for itemID, count in pairs(t) do
-      if itemID and count and count > 0 then
-        sums[itemID] = (sums[itemID] or 0) + count
-      end
-    end
-  end
-
-  for _, entry in pairs(chars) do
-    if type(entry) == "table" then
-      addTable(entry.bags)
-      addTable(entry.bank)
-    end
-  end
-  addTable(realmData.warbank)
 end
 
 function ns.Snapshots.GetTrackedCharacters(addon)
@@ -477,6 +445,9 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
   end
 
   local function pickCount(flatCount, qualityCount)
+    if targetQuality then
+      return qualityCount or 0
+    end
     if qualityCount and qualityCount > 0 then
       return qualityCount
     end
@@ -532,6 +503,5 @@ ns.SnapshotCurrentCharacter = ns.Snapshots.SnapshotCurrentCharacter
 ns.SnapshotLearnedRecipes = ns.Snapshots.SnapshotLearnedRecipes
 ns.IsRecipeLearned = ns.Snapshots.IsRecipeLearned
 ns.ScanCurrentProfessionLearned = ns.Snapshots.ScanCurrentProfessionLearned
-ns.BuildAltItemSums = ns.Snapshots.BuildAltItemSums
 ns.GetTrackedCharacters = ns.Snapshots.GetTrackedCharacters
 ns.GetTrackedItemBreakdown = ns.Snapshots.GetTrackedItemBreakdown

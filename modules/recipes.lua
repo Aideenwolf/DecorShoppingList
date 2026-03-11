@@ -7,6 +7,22 @@ ns.Recipes = ns.Recipes or {}
 local QUALITY_MODE_ANY = "any"
 local QUALITY_MODE_SPECIFIC = "specific"
 local wipeTable = wipe
+local tempTablePool = {}
+
+local function AcquireTempTable()
+  local t = tempTablePool[#tempTablePool]
+  if t then
+    tempTablePool[#tempTablePool] = nil
+    return t
+  end
+  return {}
+end
+
+local function ReleaseTempTable(t)
+  if type(t) ~= "table" then return end
+  wipeTable(t)
+  tempTablePool[#tempTablePool + 1] = t
+end
 
 local function NormalizeGoalQualityTracking(goal)
   if type(goal) ~= "table" then
@@ -33,10 +49,6 @@ local function SetGoalQualityTracking(goal, qualityMode, targetQuality)
 
   goal.qualityMode = QUALITY_MODE_ANY
   goal.targetQuality = nil
-end
-
-local function GetGoalDisplayName(name, goal)
-  return name
 end
 
 local function GetTrackedHaveCount(addon, goal, itemID)
@@ -291,13 +303,15 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
     if r and r.itemID and r.qty then
       local itemID = r.itemID
       local qty = (r.qty * craftsNeeded)
-      local key = MakeReagentKey(itemID, targetQuality)
+      local reagentQuality = (targetQuality and ns.Data.ItemSupportsTrackedQuality and ns.Data.ItemSupportsTrackedQuality(itemID))
+        and targetQuality or nil
+      local key = MakeReagentKey(itemID, reagentQuality)
       local entry = addon.cache.reagents[key]
       if type(entry) ~= "table" then
         entry = {
           key = key,
           itemID = itemID,
-          targetQuality = targetQuality,
+          targetQuality = reagentQuality,
           need = 0,
         }
         addon.cache.reagents[key] = entry
@@ -319,13 +333,13 @@ function ns.Recipes.RecomputeDisplayOnly(addon)
 
   addon.cache.recipesDisplay = addon.cache.recipesDisplay or {}
   wipeTable(addon.cache.recipesDisplay)
-  local byProf = {}
+  local byProf = AcquireTempTable()
 
   for _, row in ipairs(addon.cache.recipes) do
     if row.itemID then
       local itemName = ns.Data.GetItemNameWithCache(addon, row.itemID) or row.rawName or row.name
       if itemName and itemName ~= "" then
-        row.name = GetGoalDisplayName(ns.Data.ColorizeByQuality(row.itemID, itemName), row)
+        row.name = ns.Data.ColorizeByQuality(row.itemID, itemName)
         row.rawName = row.rawName or itemName
       end
 
@@ -342,11 +356,11 @@ function ns.Recipes.RecomputeDisplayOnly(addon)
     end
 
     local prof = (row.profession and row.profession ~= "") and row.profession or "Unknown"
-    byProf[prof] = byProf[prof] or {}
+    byProf[prof] = byProf[prof] or AcquireTempTable()
     table.insert(byProf[prof], row)
   end
 
-  local profNames = {}
+  local profNames = AcquireTempTable()
   for profName, _ in pairs(byProf) do
     table.insert(profNames, profName)
   end
@@ -406,6 +420,12 @@ function ns.Recipes.RecomputeDisplayOnly(addon)
   local sorted, display = ns.Reagents.SortAndBuildDisplay(flat, mode, collapsed, ns.Data.GetExpansionName)
   addon.cache.reagentsList = sorted
   addon.cache.reagentsDisplay = display
+
+  for _, profName in ipairs(profNames) do
+    ReleaseTempTable(byProf[profName])
+  end
+  ReleaseTempTable(profNames)
+  ReleaseTempTable(byProf)
 end
 
 function ns.Recipes.RecomputeCaches(addon)
@@ -424,30 +444,28 @@ function ns.Recipes.RecomputeCaches(addon)
   addon.db.profile.window = addon.db.profile.window or {}
   addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
 
-  if addon.db.profile.includeAlts then
-    if ns.BuildAltItemSums then
-      ns.BuildAltItemSums(addon)
-    end
-  else
-    addon.cache.altItemSums = nil
-  end
-
   local collapsed = addon.db.profile.window.collapsed
-  local byProf = {}
+  local byProf = AcquireTempTable()
 
   addon.cache._sortCache = addon.cache._sortCache or {}
   addon.cache._sortCache.recipesByProf = addon.cache._sortCache.recipesByProf or {}
   addon.cache._sortCache.reagents = addon.cache._sortCache.reagents or {}
 
-  local memo = {
-    profByRecipe = {},
-    hasProfByName = {},
-    outputItemByRecipe = {},
-    qualityByItem = {},
-    expacByItem = {},
-    expacNameByID = {},
-    iconByItem = {},
-  }
+  local memo = AcquireTempTable()
+  memo.profByRecipe = memo.profByRecipe or AcquireTempTable()
+  memo.hasProfByName = memo.hasProfByName or AcquireTempTable()
+  memo.outputItemByRecipe = memo.outputItemByRecipe or AcquireTempTable()
+  memo.qualityByItem = memo.qualityByItem or AcquireTempTable()
+  memo.expacByItem = memo.expacByItem or AcquireTempTable()
+  memo.expacNameByID = memo.expacNameByID or AcquireTempTable()
+  memo.iconByItem = memo.iconByItem or AcquireTempTable()
+  wipeTable(memo.profByRecipe)
+  wipeTable(memo.hasProfByName)
+  wipeTable(memo.outputItemByRecipe)
+  wipeTable(memo.qualityByItem)
+  wipeTable(memo.expacByItem)
+  wipeTable(memo.expacNameByID)
+  wipeTable(memo.iconByItem)
 
   local function MemoProfName(recipeID)
     if not recipeID then return "Unknown" end
@@ -571,7 +589,7 @@ function ns.Recipes.RecomputeCaches(addon)
         end
 
         local baseName = GetRecipeDisplayName(addon, goal)
-        local name = GetGoalDisplayName(baseName, goal)
+        local name = baseName
         local rarity = (goal.itemID and MemoQuality(goal.itemID)) or goal.rarity or -1
         local prof = ns.Data.NormalizeProfessionName(goal.profession) or "Unknown"
         if prof ~= "Unknown" then goal.profession = prof end
@@ -614,7 +632,7 @@ function ns.Recipes.RecomputeCaches(addon)
           isDecor = isDecor,
         }
 
-        byProf[prof] = byProf[prof] or {}
+        byProf[prof] = byProf[prof] or AcquireTempTable()
         table.insert(byProf[prof], row)
         table.insert(addon.cache.recipes, row)
 
@@ -640,7 +658,7 @@ function ns.Recipes.RecomputeCaches(addon)
     end
   end
 
-  local profNames = {}
+  local profNames = AcquireTempTable()
   for profName, _ in pairs(byProf) do
     table.insert(profNames, profName)
   end
@@ -663,13 +681,13 @@ function ns.Recipes.RecomputeCaches(addon)
 
     local entry = profCache[profName]
     if entry and entry.sig == sig and entry.order then
-      local map = {}
+      local map = AcquireTempTable()
       for _, r in ipairs(list) do
         local k = tostring(r.recipeID or r.itemID or r.name or "")
         map[k] = r
       end
 
-      local ordered = {}
+      local ordered = AcquireTempTable()
       local ok = true
       for _, k in ipairs(entry.order) do
         local r = map[k]
@@ -678,18 +696,25 @@ function ns.Recipes.RecomputeCaches(addon)
       end
 
       if ok and #ordered == #list then
+        local originalList = list
         list = ordered
         byProf[profName] = ordered
+        ReleaseTempTable(originalList)
       else
+        ReleaseTempTable(ordered)
         entry = nil
       end
+      ReleaseTempTable(map)
     end
 
     if not entry then
       ns.Sorting.SortRecipeList(list, rMode)
-      local order = {}
+      local order = AcquireTempTable()
       for _, r in ipairs(list) do
         table.insert(order, tostring(r.recipeID or r.itemID or r.name or ""))
+      end
+      if profCache[profName] and profCache[profName].order then
+        ReleaseTempTable(profCache[profName].order)
       end
       profCache[profName] = { sig = sig, order = order }
     end
@@ -727,6 +752,30 @@ function ns.Recipes.RecomputeCaches(addon)
   end
 
   ns.Reagents.BuildDisplayOnly(addon)
+
+  for _, profName in ipairs(profNames) do
+    local list = byProf[profName]
+    if list then
+      ReleaseTempTable(list)
+    end
+  end
+  ReleaseTempTable(profNames)
+  ReleaseTempTable(byProf)
+  ReleaseTempTable(memo.profByRecipe)
+  ReleaseTempTable(memo.hasProfByName)
+  ReleaseTempTable(memo.outputItemByRecipe)
+  ReleaseTempTable(memo.qualityByItem)
+  ReleaseTempTable(memo.expacByItem)
+  ReleaseTempTable(memo.expacNameByID)
+  ReleaseTempTable(memo.iconByItem)
+  memo.profByRecipe = nil
+  memo.hasProfByName = nil
+  memo.outputItemByRecipe = nil
+  memo.qualityByItem = nil
+  memo.expacByItem = nil
+  memo.expacNameByID = nil
+  memo.iconByItem = nil
+  ReleaseTempTable(memo)
 end
 
 function ns.Recipes.GetGoalForRecipe(addon, recipeID)

@@ -2,6 +2,23 @@ local ADDON, ns = ...
 ns = ns or {}
 
 ns.Sorting = ns.Sorting or {}
+local wipeTable = wipe
+local tempTablePool = {}
+
+local function AcquireTempTable()
+  local t = tempTablePool[#tempTablePool]
+  if t then
+    tempTablePool[#tempTablePool] = nil
+    return t
+  end
+  return {}
+end
+
+local function ReleaseTempTable(t)
+  if type(t) ~= "table" then return end
+  wipeTable(t)
+  tempTablePool[#tempTablePool + 1] = t
+end
 
 function ns.Sorting.NameKey(x)
   return tostring(x and (x.rawName or x.name or "") or ""):lower()
@@ -74,7 +91,6 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
   collapsed = collapsed or {}
   mode = mode or "E"
 
-  local function nameKey(x) return ns.Sorting.NameKey(x) end
   local function rarityKey(x) return (x.rarity or -1) end
 
   local function completeAwareCompare(a, b, innerCompare)
@@ -150,13 +166,13 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
     table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortEInner) end)
 
     local display = {}
-    local byExpac = {}
-    local expacOrder = {}
+    local byExpac = AcquireTempTable()
+    local expacOrder = AcquireTempTable()
 
     for _, e in ipairs(flat) do
       local id = e.expacID or -1
       if byExpac[id] == nil then
-        byExpac[id] = {}
+        byExpac[id] = AcquireTempTable()
         table.insert(expacOrder, id)
       end
       table.insert(byExpac[id], e)
@@ -182,24 +198,30 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
       end
     end
 
+    for _, id in ipairs(expacOrder) do
+      ReleaseTempTable(byExpac[id])
+    end
+    ReleaseTempTable(expacOrder)
+    ReleaseTempTable(byExpac)
     return flat, display
   end
 
   table.sort(flat, function(a, b) return completeAwareCompare(a, b, sortSInner) end)
 
   local display = {}
-  local byGather = {}
-  local byCraft = {}
-  local vendor, other = {}, {}
+  local byGather = AcquireTempTable()
+  local byCraft = AcquireTempTable()
+  local vendor = AcquireTempTable()
+  local other = AcquireTempTable()
 
   for _, e in ipairs(flat) do
     if e.source == "Gathering" then
       local sub = e.subSource or "Other"
-      byGather[sub] = byGather[sub] or {}
+      byGather[sub] = byGather[sub] or AcquireTempTable()
       table.insert(byGather[sub], e)
     elseif e.source == "Crafting" then
       local sub = e.subSource or "Other"
-      byCraft[sub] = byCraft[sub] or {}
+      byCraft[sub] = byCraft[sub] or AcquireTempTable()
       table.insert(byCraft[sub], e)
     elseif e.source == "Vendor" then
       table.insert(vendor, e)
@@ -293,6 +315,19 @@ function ns.Sorting.SortReagentFlat(flat, mode, collapsed, getExpansionName)
 
   AddSimpleGroup("Vendor", "SRC:VENDOR", vendor)
   AddSimpleGroup("Other", "SRC:OTHER", other)
+
+  for sub, list in pairs(byGather) do
+    ReleaseTempTable(list)
+    byGather[sub] = nil
+  end
+  for sub, list in pairs(byCraft) do
+    ReleaseTempTable(list)
+    byCraft[sub] = nil
+  end
+  ReleaseTempTable(vendor)
+  ReleaseTempTable(other)
+  ReleaseTempTable(byGather)
+  ReleaseTempTable(byCraft)
 
   return flat, display
 end

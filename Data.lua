@@ -91,11 +91,7 @@ local function GetTrackedQualityLabel(quality)
   return quality and QUALITY_LABELS[quality] or nil
 end
 
-local function GetTrackedQualityFromItemLink(itemLink)
-  if type(itemLink) ~= "string" or itemLink == "" then
-    return nil
-  end
-
+local function GetTrackedQualityFromItemInfo(itemInfo)
   local api = C_TradeSkillUI
   if api then
     for _, fn in pairs({
@@ -103,7 +99,7 @@ local function GetTrackedQualityFromItemLink(itemLink)
       api.GetItemReagentQualityByItemInfo,
     }) do
       if type(fn) == "function" then
-        local ok, quality = pcall(fn, itemLink)
+        local ok, quality = pcall(fn, itemInfo)
         quality = NormalizeTrackedQuality(ok and quality or nil)
         if quality then
           return quality
@@ -115,15 +111,28 @@ local function GetTrackedQualityFromItemLink(itemLink)
   return nil
 end
 
+local function GetTrackedQualityFromItemLink(itemLink)
+  return GetTrackedQualityFromItemInfo(itemLink)
+end
+
 local function GetTrackedQualityFromContainerItem(bagID, slot, info)
   local itemLink = info and info.hyperlink
+  local itemID = info and info.itemID
   if (not itemLink or itemLink == "") and C_Container and C_Container.GetContainerItemLink then
     local ok, link = pcall(C_Container.GetContainerItemLink, bagID, slot)
     if ok then
       itemLink = link
     end
   end
-  return GetTrackedQualityFromItemLink(itemLink)
+  return GetTrackedQualityFromItemInfo(itemLink)
+      or GetTrackedQualityFromItemInfo(itemID)
+end
+
+local function ItemSupportsTrackedQuality(itemID)
+  if not itemID then
+    return false
+  end
+  return NormalizeTrackedQuality(GetTrackedQualityFromItemInfo(itemID)) ~= nil
 end
 
 local function ColorizeByQuality(itemID, text)
@@ -241,17 +250,17 @@ end
 local function GetItemNameWithCache(addon, itemID)
   if not itemID then return nil end
 
-  local live = GetItemNameFast(itemID)
   local cache = EnsureItemNameCache(addon)
+  if cache and cache[itemID] and cache[itemID] ~= "" then
+    return cache[itemID]
+  end
+
+  local live = GetItemNameFast(itemID)
   if live and live ~= "" then
     if cache then
       cache[itemID] = live
     end
     return live
-  end
-
-  if cache then
-    return cache[itemID]
   end
 
   return nil
@@ -297,6 +306,7 @@ ns.Data.GetTrackedQualityLabel = GetTrackedQualityLabel
 ns.Data.QUALITY_ATLAS_CANDIDATES = QUALITY_ATLAS_CANDIDATES
 ns.Data.GetTrackedQualityFromItemLink = GetTrackedQualityFromItemLink
 ns.Data.GetTrackedQualityFromContainerItem = GetTrackedQualityFromContainerItem
+ns.Data.ItemSupportsTrackedQuality = ItemSupportsTrackedQuality
 ns.Data.ColorizeByQuality = ColorizeByQuality
 ns.Data.IsDecorItem = IsDecorItem
 ns.Data.GetItemExpansionID = GetItemExpansionID
@@ -363,10 +373,10 @@ function ns.GetHaveCount(addon, itemID)
   end
 
   local function pickAggregateCount(flatTotal, qualityTotal)
-    -- Prefer per-quality totals when present. They are the authoritative path for
-    -- quality-capable items and avoid stale legacy flat counts from older snapshots.
+    -- For aggregate "any quality" counts, use the larger of the flat and per-quality
+    -- totals so partial quality detection does not undercount mixed-quality stock.
     if qualityTotal and qualityTotal > 0 then
-      return qualityTotal
+      return math.max(flatTotal or 0, qualityTotal)
     end
     return flatTotal or 0
   end
@@ -481,7 +491,7 @@ function ns.GetHaveQualityBreakdown(addon, itemID)
   return breakdown
 end
 
--- Called by Core.lua on TRADE_SKILL_LIST_UPDATE / SHOW / NEW_RECIPE_LEARNED
+-- Learned recipe snapshot helpers used by Core.lua and Professions.lua
 ns.SnapshotLearnedRecipes = ns.Snapshots.SnapshotLearnedRecipes
 ns.IsRecipeLearned = ns.Snapshots.IsRecipeLearned
 ns.ScanCurrentProfessionLearned = ns.Snapshots.ScanCurrentProfessionLearned
@@ -496,5 +506,4 @@ ns.ApplyCompletionByInventoryDelta = ns.Recipes.ApplyCompletionByInventoryDelta
 ns.RecomputeReagentsOnly = ns.Reagents.RecomputeReagentsOnly
 ns.RecomputeDisplayOnly = ns.Recipes.RecomputeDisplayOnly
 ns.RecomputeCaches = ns.Recipes.RecomputeCaches
-ns.BuildAltItemSums = ns.Snapshots.BuildAltItemSums
 ns.AccumulateReagentsForRecipe = ns.Recipes.AccumulateReagentsForRecipe

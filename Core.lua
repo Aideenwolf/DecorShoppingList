@@ -102,13 +102,10 @@ local function ResetCountData(addon)
                 lastRecipeScan = entry.lastRecipeScan or 0,
                 className = entry.className,
                 classToken = entry.classToken,
-                items = {},
                 bags = {},
                 bank = {},
-                warbank = {},
                 bagsByQuality = {},
                 bankByQuality = {},
-                warbankByQuality = {},
               }
             end
           end

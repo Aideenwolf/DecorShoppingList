@@ -45,6 +45,50 @@ local function ColorizeCharacterName(name, classToken)
   return name
 end
 
+local function FormatQualityBreakdown(counts, tierItemIDs)
+  counts = type(counts) == "table" and counts or {}
+  local bronze = counts[1] or 0
+  local silver = counts[2] or 0
+  local gold = counts[3] or 0
+  local total = counts.total or (bronze + silver + gold)
+  if bronze == 0 and silver == 0 and gold == 0 then
+    return tostring(total)
+  end
+
+  local function iconForQuality(quality)
+    local atlases = ns.Data.QUALITY_ATLAS_CANDIDATES and ns.Data.QUALITY_ATLAS_CANDIDATES[quality]
+    local atlas = atlases and atlases[1]
+    if atlas then
+      return string.format("|A:%s:14:14|a", atlas)
+    end
+    return tostring(quality)
+  end
+
+  local qualityMap = { 1, 2, 3 }
+  local tierCount = 0
+  if type(tierItemIDs) == "table" then
+    for idx = 1, 3 do
+      if type(tierItemIDs[idx]) == "number" then
+        tierCount = tierCount + 1
+      end
+    end
+  end
+  if tierCount == 2 and gold == 0 then
+    qualityMap = { 2, 3 }
+  end
+
+  local parts = {}
+  local values = { bronze, silver, gold }
+  for index, amount in ipairs(values) do
+    if amount > 0 then
+      local displayQuality = qualityMap[index] or index
+      parts[#parts + 1] = string.format("%s %d", iconForQuality(displayQuality), amount)
+    end
+  end
+
+  return string.format("%s    %d", table.concat(parts, " | "), total)
+end
+
 local function ApplyQualityIcon(texture, quality)
   if not texture then return false end
   quality = ns.Data.NormalizeTrackedQuality(quality)
@@ -517,7 +561,8 @@ function ns.InitListWindow(addon)
 
       -- Reagents: show item tooltip + counts (keep existing info)
       if view == "reagents" and self.data.itemID then
-        local tooltipItemID = (ns.Data.SelectTooltipItemID and ns.Data.SelectTooltipItemID(addon, self.data.itemID, self.data.targetQuality))
+        local tooltipItemID = (self.data.tooltipItemID)
+          or (ns.Data.SelectTooltipItemID and ns.Data.SelectTooltipItemID(addon, self.data.itemID, self.data.targetQuality))
           or self.data.itemID
         GameTooltip:SetItemByID(tooltipItemID)
         GameTooltip:AddLine(" ")
@@ -526,23 +571,22 @@ function ns.InitListWindow(addon)
         GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
 
         if ns.GetTrackedItemBreakdown then
-          local owners, warbank = ns.GetTrackedItemBreakdown(addon, self.data.itemID, self.data.targetQuality)
-          if (#owners > 0) or ((warbank or 0) > 0) then
+          local owners, warbank = ns.GetTrackedItemBreakdown(addon, self.data.baseItemID or self.data.itemID, nil, self.data.tierItemIDs)
+          if (#owners > 0) or (type(warbank) == "table" and (warbank.total or 0) > 0) then
             GameTooltip:AddLine(" ")
             GameTooltip:AddLine(L["OWNERSHIP_BREAKDOWN"] or "Ownership Breakdown", 1, 0.82, 0)
 
-            if (warbank or 0) > 0 then
+            if type(warbank) == "table" and (warbank.total or 0) > 0 then
               GameTooltip:AddDoubleLine(
                 L["WARBANK"] or "Warbank",
-                tostring(warbank or 0),
+                FormatQualityBreakdown(warbank, self.data.tierItemIDs),
                 1, 1, 1, 0.9, 0.9, 0.9
               )
             end
 
             for _, info in ipairs(owners) do
               local label = ColorizeCharacterName(info.charName or info.charKey or "?", info.classToken)
-              local value = string.format("%d Bags | %d Bank", info.bags or 0, info.bank or 0)
-              GameTooltip:AddDoubleLine(label, value, 1, 1, 1, 0.9, 0.9, 0.9)
+              GameTooltip:AddDoubleLine(label, FormatQualityBreakdown(info.counts, self.data.tierItemIDs), 1, 1, 1, 0.9, 0.9, 0.9)
             end
           end
         end
@@ -728,9 +772,12 @@ function ns.ShowListWindow(addon, show)
   if not f then return end
 
   if show then
+    if ns.SnapshotCurrentCharacter then
+      ns.SnapshotCurrentCharacter(addon)
+    end
     ns.ApplyWindowStateFromDB(addon)
     f:Show()
-    addon:MarkDirty("display")
+    addon:MarkDirty("inventory")
   else
     f:Hide()
   end

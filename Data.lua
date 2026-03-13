@@ -91,12 +91,11 @@ local function GetTrackedQualityLabel(quality)
   return quality and QUALITY_LABELS[quality] or nil
 end
 
-local function GetTrackedQualityFromItemInfo(itemInfo)
+local function GetTrackedReagentQualityFromItemInfo(itemInfo)
   local api = C_TradeSkillUI
   if api then
     for _, fn in pairs({
       api.GetItemReagentQualityInfo,
-      api.GetItemCraftedQualityInfo,
     }) do
       if type(fn) == "function" then
         local ok, info = pcall(fn, itemInfo)
@@ -109,7 +108,6 @@ local function GetTrackedQualityFromItemInfo(itemInfo)
 
     for _, fn in pairs({
       api.GetItemReagentQualityByItemInfo,
-      api.GetItemCraftedQualityByItemInfo,
     }) do
       if type(fn) == "function" then
         local ok, quality = pcall(fn, itemInfo)
@@ -124,8 +122,45 @@ local function GetTrackedQualityFromItemInfo(itemInfo)
   return nil
 end
 
+local function GetTrackedQualityFromItemInfo(itemInfo)
+  local quality = GetTrackedReagentQualityFromItemInfo(itemInfo)
+  if quality then
+    return quality
+  end
+
+  local api = C_TradeSkillUI
+  if api then
+    for _, fn in pairs({
+      api.GetItemCraftedQualityInfo,
+    }) do
+      if type(fn) == "function" then
+        local ok, info = pcall(fn, itemInfo)
+        quality = NormalizeTrackedQuality(ok and type(info) == "table" and info.quality or nil)
+        if quality then
+          return quality
+        end
+      end
+    end
+
+    for _, fn in pairs({
+      api.GetItemCraftedQualityByItemInfo,
+    }) do
+      if type(fn) == "function" then
+        local ok
+        ok, quality = pcall(fn, itemInfo)
+        quality = NormalizeTrackedQuality(ok and quality or nil)
+        if quality then
+          return quality
+        end
+      end
+    end
+  end
+
+  return nil
+end
+
 local function GetTrackedQualityFromItemLink(itemLink)
-  return GetTrackedQualityFromItemInfo(itemLink)
+  return GetTrackedReagentQualityFromItemInfo(itemLink)
 end
 
 local function GetTrackedQualityFromContainerItem(bagID, slot, info)
@@ -145,14 +180,28 @@ local function GetTrackedQualityFromContainerItem(bagID, slot, info)
       end
     end
   end
-  return GetTrackedQualityFromItemInfo(itemLink)
+  local quality = GetTrackedQualityFromItemInfo(itemLink)
+  if quality then
+    return quality
+  end
+
+  return nil
 end
 
 local function ItemSupportsTrackedQuality(itemID)
   if not itemID then
     return false
   end
-  return NormalizeTrackedQuality(GetTrackedQualityFromItemInfo(itemID)) ~= nil
+  return NormalizeTrackedQuality(GetTrackedReagentQualityFromItemInfo(itemID)) ~= nil
+end
+
+local function GetTrackedQualityFromOwnedItemID(itemID)
+  local quality = NormalizeTrackedQuality(GetTrackedReagentQualityFromItemInfo(itemID))
+  if quality then
+    return quality
+  end
+
+  return nil
 end
 
 local function ColorizeByQuality(itemID, text)
@@ -239,6 +288,14 @@ local function GetExpansionName(expacID)
   return EXPAC_NAMES[expacID] or ("Expansion " .. tostring(expacID))
 end
 
+local function UsesModernReagentQuality(itemID)
+  if type(itemID) ~= "number" then
+    return false
+  end
+  local expacID = GetItemExpansionID(itemID)
+  return type(expacID) == "number" and expacID >= 9
+end
+
 local function PickRequiredReagent(slot)
   if not slot or not slot.reagents or #slot.reagents == 0 then return nil end
   for _, r in ipairs(slot.reagents) do
@@ -247,6 +304,42 @@ local function PickRequiredReagent(slot)
     end
   end
   return slot.reagents[1]
+end
+
+local function GetRequiredReagentTierItemIDs(slot)
+  if not slot or type(slot.reagents) ~= "table" then
+    return nil
+  end
+
+  local tiers = {}
+  local fallback = {}
+  for index, reagent in ipairs(slot.reagents) do
+    if index > 4 then
+      break
+    end
+    if reagent and reagent.itemID then
+      local quality = NormalizeTrackedQuality(GetTrackedReagentQualityFromItemInfo(reagent.itemID))
+      if quality then
+        tiers[quality] = reagent.itemID
+      else
+        fallback[#fallback + 1] = reagent.itemID
+      end
+    end
+  end
+
+  if not next(tiers) then
+    for index, itemID in ipairs(fallback) do
+      if index > 3 then
+        break
+      end
+      tiers[index] = itemID
+    end
+  end
+
+  if next(tiers) then
+    return tiers
+  end
+  return nil
 end
 
 local function GetRecipeSchematicSafe(recipeID)
@@ -313,6 +406,58 @@ local function SumBucketByName(addon, bucket, targetName)
   return total
 end
 
+local function SumBucketByNameAndQuality(addon, bucket, targetName, targetQuality, breakdown)
+  if type(bucket) ~= "table" or not targetName or targetName == "" then
+    return 0
+  end
+
+  targetQuality = NormalizeTrackedQuality(targetQuality)
+  local total = 0
+  for candidateItemID, count in pairs(bucket) do
+    if type(candidateItemID) == "number" and type(count) == "number" and count > 0 then
+      local candidateName = GetItemNameWithCache(addon, candidateItemID)
+      if candidateName == targetName then
+        local candidateQuality = NormalizeTrackedQuality(GetTrackedQualityFromOwnedItemID(candidateItemID))
+        if breakdown and candidateQuality then
+          breakdown[candidateQuality] = (breakdown[candidateQuality] or 0) + count
+        end
+        if not targetQuality or candidateQuality == targetQuality then
+          total = total + count
+        end
+      end
+    end
+  end
+  return total
+end
+
+local function SumQualityBucketByName(addon, bucket, targetName, targetQuality, breakdown)
+  if type(bucket) ~= "table" or not targetName or targetName == "" then
+    return 0
+  end
+
+  targetQuality = NormalizeTrackedQuality(targetQuality)
+  local total = 0
+  for candidateItemID, byQuality in pairs(bucket) do
+    if type(candidateItemID) == "number" and type(byQuality) == "table" then
+      local candidateName = GetItemNameWithCache(addon, candidateItemID)
+      if candidateName == targetName then
+        for quality = 1, 3 do
+          local count = tonumber(byQuality[quality]) or 0
+          if count > 0 then
+            if breakdown then
+              breakdown[quality] = (breakdown[quality] or 0) + count
+            end
+            if not targetQuality or quality == targetQuality then
+              total = total + count
+            end
+          end
+        end
+      end
+    end
+  end
+  return total
+end
+
 local function SumBucketExact(bucket, itemID)
   if type(bucket) ~= "table" or not itemID then
     return 0
@@ -322,6 +467,9 @@ end
 
 local function SelectTooltipItemID(addon, itemID, targetQuality)
   if not (addon and addon.db and itemID) then
+    return itemID
+  end
+  if not UsesModernReagentQuality(itemID) then
     return itemID
   end
 
@@ -347,7 +495,7 @@ local function SelectTooltipItemID(addon, itemID, targetQuality)
       if type(candidateItemID) == "number" and type(count) == "number" and count > 0 then
         local candidateName = ResolveItemGroupName(addon, candidateItemID)
         if candidateName == targetName then
-          local candidateQuality = NormalizeTrackedQuality(GetTrackedQualityFromItemInfo(candidateItemID))
+          local candidateQuality = GetTrackedQualityFromOwnedItemID(candidateItemID)
           if targetQuality then
             if candidateQuality == targetQuality then
               if not bestID or candidateItemID < bestID then
@@ -419,18 +567,23 @@ ns.Data.GetTrackedQualityLabel = GetTrackedQualityLabel
 ns.Data.QUALITY_ATLAS_CANDIDATES = QUALITY_ATLAS_CANDIDATES
 ns.Data.GetTrackedQualityFromItemLink = GetTrackedQualityFromItemLink
 ns.Data.GetTrackedQualityFromContainerItem = GetTrackedQualityFromContainerItem
+ns.Data.GetTrackedQualityFromOwnedItemID = GetTrackedQualityFromOwnedItemID
 ns.Data.ItemSupportsTrackedQuality = ItemSupportsTrackedQuality
 ns.Data.ColorizeByQuality = ColorizeByQuality
 ns.Data.IsDecorItem = IsDecorItem
 ns.Data.GetItemExpansionID = GetItemExpansionID
 ns.Data.GetExpansionName = GetExpansionName
+ns.Data.UsesModernReagentQuality = UsesModernReagentQuality
 ns.Data.PickRequiredReagent = PickRequiredReagent
+ns.Data.GetRequiredReagentTierItemIDs = GetRequiredReagentTierItemIDs
 ns.Data.GetRecipeSchematicSafe = GetRecipeSchematicSafe
 ns.Data.EnsureRecipeCache = EnsureRecipeCache
 ns.Data.EnsureItemNameCache = EnsureItemNameCache
 ns.Data.GetItemNameWithCache = GetItemNameWithCache
 ns.Data.ResolveItemGroupName = ResolveItemGroupName
 ns.Data.SelectTooltipItemID = SelectTooltipItemID
+ns.Data.SumBucketByNameAndQuality = SumBucketByNameAndQuality
+ns.Data.SumQualityBucketByName = SumQualityBucketByName
 ns.Data.NormalizeProfessionName = NormalizeProfessionName
 
 -- -------------------------
@@ -541,8 +694,51 @@ function ns.GetHaveCountExact(addon, itemID)
   return total + SumBucketExact(realmWarbank, itemID)
 end
 
+function ns.GetHaveCountForItemIDs(addon, itemIDs)
+  if not (addon and addon.db and type(itemIDs) == "table") then return 0 end
+
+  local realm, key = playerKey()
+  local realms = addon.db.global and addon.db.global.realms
+  local realmData = realms and realms[realm]
+  local chars = realmData and realmData.chars
+  if not chars then return 0 end
+  local includeAlts = addon.db.profile and addon.db.profile.includeAlts
+  local realmWarbank = (realmData and realmData.warbank) or {}
+
+  local function sumFromBucket(bucket)
+    local total = 0
+    if type(bucket) ~= "table" then
+      return 0
+    end
+    for _, candidateItemID in ipairs(itemIDs) do
+      if type(candidateItemID) == "number" then
+        total = total + (bucket[candidateItemID] or 0)
+      end
+    end
+    return total
+  end
+
+  local function countEntry(entry)
+    if type(entry) ~= "table" then return 0 end
+    return sumFromBucket(entry.bags) + sumFromBucket(entry.bank)
+  end
+
+  if not includeAlts then
+    return countEntry(chars[key]) + sumFromBucket(realmWarbank)
+  end
+
+  local total = 0
+  for _, entry in pairs(chars) do
+    total = total + countEntry(entry)
+  end
+  return total + sumFromBucket(realmWarbank)
+end
+
 function ns.GetHaveCountByName(addon, itemIDOrName)
   if not (addon and addon.db and itemIDOrName) then return 0 end
+  if type(itemIDOrName) == "number" and not UsesModernReagentQuality(itemIDOrName) then
+    return ns.GetHaveCount(addon, itemIDOrName)
+  end
 
   local targetName = ResolveItemGroupName(addon, itemIDOrName)
   if not targetName or targetName == "" then return 0 end
@@ -575,6 +771,12 @@ function ns.GetHaveCountByQuality(addon, itemID, quality)
   if not (addon and addon.db and itemID) then return 0 end
   quality = NormalizeTrackedQuality(quality)
   if not quality then return 0 end
+  if not UsesModernReagentQuality(itemID) then
+    return ns.GetHaveCountExact(addon, itemID)
+  end
+
+  local targetName = ResolveItemGroupName(addon, itemID)
+  if not targetName or targetName == "" then return 0 end
 
   local realm, key = ns.Data.playerKey()
   local realms = addon.db.global and addon.db.global.realms
@@ -585,22 +787,15 @@ function ns.GetHaveCountByQuality(addon, itemID, quality)
   local realmWarbankByQuality = (realmData and realmData.warbankByQuality) or {}
 
   local function countEntry(entry)
-    local total = 0
-    if type(entry) == "table" then
-      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality" }) do
-        local bucket = entry[bucketName]
-        local byItem = type(bucket) == "table" and bucket[itemID]
-        if type(byItem) == "table" then
-          total = total + (byItem[quality] or 0)
-        end
-      end
+    if type(entry) ~= "table" then
+      return 0
     end
-    return total
+    return SumQualityBucketByName(addon, entry.bagsByQuality, targetName, quality)
+      + SumQualityBucketByName(addon, entry.bankByQuality, targetName, quality)
   end
 
   if not includeAlts then
-    local byItem = realmWarbankByQuality[itemID]
-    return countEntry(chars[key]) + ((type(byItem) == "table" and byItem[quality]) or 0)
+    return countEntry(chars[key]) + SumQualityBucketByName(addon, realmWarbankByQuality, targetName, quality)
   end
 
   local total = 0
@@ -608,13 +803,20 @@ function ns.GetHaveCountByQuality(addon, itemID, quality)
     total = total + countEntry(entry)
   end
 
-  local byItem = realmWarbankByQuality[itemID]
-  return total + ((type(byItem) == "table" and byItem[quality]) or 0)
+  return total + SumQualityBucketByName(addon, realmWarbankByQuality, targetName, quality)
 end
 
 function ns.GetHaveQualityBreakdown(addon, itemID)
   local breakdown = { [1] = 0, [2] = 0, [3] = 0 }
   if not (addon and addon.db and itemID) then return breakdown end
+  if not UsesModernReagentQuality(itemID) then
+    local quality = NormalizeTrackedQuality(GetTrackedQualityFromOwnedItemID(itemID)) or 1
+    breakdown[quality] = ns.GetHaveCountExact(addon, itemID)
+    return breakdown
+  end
+
+  local targetName = ResolveItemGroupName(addon, itemID)
+  if not targetName or targetName == "" then return breakdown end
 
   local realm, key = ns.Data.playerKey()
   local realms = addon.db.global and addon.db.global.realms
@@ -625,27 +827,16 @@ function ns.GetHaveQualityBreakdown(addon, itemID)
   local realmWarbankByQuality = (realmData and realmData.warbankByQuality) or {}
 
   local function addEntry(entry)
-    if type(entry) == "table" then
-      for _, bucketName in ipairs({ "bagsByQuality", "bankByQuality" }) do
-        local bucket = entry[bucketName]
-        local byItem = type(bucket) == "table" and bucket[itemID]
-        if type(byItem) == "table" then
-          for quality = 1, 3 do
-            breakdown[quality] = breakdown[quality] + (byItem[quality] or 0)
-          end
-        end
-      end
+    if type(entry) ~= "table" then
+      return
     end
+    SumQualityBucketByName(addon, entry.bagsByQuality, targetName, nil, breakdown)
+    SumQualityBucketByName(addon, entry.bankByQuality, targetName, nil, breakdown)
   end
 
   if not includeAlts then
     addEntry(chars[key])
-    local byItem = realmWarbankByQuality[itemID]
-    if type(byItem) == "table" then
-      for quality = 1, 3 do
-        breakdown[quality] = breakdown[quality] + (byItem[quality] or 0)
-      end
-    end
+    SumQualityBucketByName(addon, realmWarbankByQuality, targetName, nil, breakdown)
     return breakdown
   end
 
@@ -653,12 +844,7 @@ function ns.GetHaveQualityBreakdown(addon, itemID)
     addEntry(entry)
   end
 
-  local byItem = realmWarbankByQuality[itemID]
-  if type(byItem) == "table" then
-    for quality = 1, 3 do
-      breakdown[quality] = breakdown[quality] + (byItem[quality] or 0)
-    end
-  end
+  SumQualityBucketByName(addon, realmWarbankByQuality, targetName, nil, breakdown)
 
   return breakdown
 end

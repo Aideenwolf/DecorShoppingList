@@ -143,6 +143,74 @@ local function HandleInventorySnapshotEvent(addon, opts)
   addon:MarkDirty("inventory")
 end
 
+local function HasTrackedQualityGoals(addon)
+  local goals = addon and addon.db and addon.db.profile and addon.db.profile.goals
+  if type(goals) ~= "table" then
+    return false
+  end
+  for _, goal in pairs(goals) do
+    if type(goal) == "table" and goal.qualityMode == "specific" and goal.targetQuality then
+      return true
+    end
+  end
+  return false
+end
+
+local function ShouldDoExpensiveInventoryWork()
+  if ns.ListWindow and ns.ListWindow.IsShown and ns.ListWindow:IsShown() then
+    return true
+  end
+  if (_G.ProfessionsFrame and _G.ProfessionsFrame:IsShown())
+      or (_G.TradeSkillFrame and _G.TradeSkillFrame:IsShown()) then
+    return true
+  end
+  if (_G.ContainerFrameCombinedBags and _G.ContainerFrameCombinedBags:IsShown())
+      or (_G.ContainerFrame1 and _G.ContainerFrame1:IsShown())
+      or (_G.BagItemSearchBox and _G.BagItemSearchBox:IsShown()) then
+    return true
+  end
+  return false
+end
+
+local function QueueInventorySnapshot(addon, delay)
+  if not addon then return end
+  if addon._dslInventoryRetryTimer then
+    addon:CancelTimer(addon._dslInventoryRetryTimer)
+  end
+  addon._dslInventoryRetryTimer = addon:ScheduleTimer(function()
+    addon._dslInventoryRetryTimer = nil
+    if addon.inCombat then
+      addon.dirty = true
+      return
+    end
+    if not ShouldDoExpensiveInventoryWork() then
+      addon.dirtyFlags = addon.dirtyFlags or NewDirtyFlags()
+      addon.dirtyFlags.inventory = true
+      return
+    end
+    SnapshotNow(addon, { skipQuality = true })
+    addon:MarkDirty("inventory")
+
+    if HasTrackedQualityGoals(addon) then
+      if addon._dslQualityInventoryRetryTimer then
+        addon:CancelTimer(addon._dslQualityInventoryRetryTimer)
+      end
+      addon._dslQualityInventoryRetryTimer = addon:ScheduleTimer(function()
+        addon._dslQualityInventoryRetryTimer = nil
+        if addon.inCombat then
+          addon.dirty = true
+          return
+        end
+        if not ShouldDoExpensiveInventoryWork() then
+          return
+        end
+        SnapshotNow(addon)
+        addon:MarkDirty("inventory")
+      end, 1.0)
+    end
+  end, delay or 0.25)
+end
+
 local function GetBankSnapshotOpts(addon)
   local mode = addon and addon._dslBankInteractionMode
   if mode == "warbank" then
@@ -279,7 +347,7 @@ function DSL:OnInventoryChanged()
     QueueBankSnapshot(self, 0.75)
     return
   end
-  HandleInventorySnapshotEvent(self)
+  QueueInventorySnapshot(self, 0.25)
 end
 
 function DSL:OnInteractionFrameShow(_, interactionType)

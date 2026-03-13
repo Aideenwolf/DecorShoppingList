@@ -265,9 +265,10 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
     if slots then
       for _, slot in ipairs(slots) do
         local r = ns.Data.PickRequiredReagent(slot)
+        local tierItemIDs = ns.Data.GetRequiredReagentTierItemIDs and ns.Data.GetRequiredReagentTierItemIDs(slot) or nil
         local qtyReq = (slot and slot.quantityRequired) or (r and r.quantityRequired) or 0
         if r and r.itemID and qtyReq and qtyReq > 0 then
-          table.insert(reagentsList, { itemID = r.itemID, qty = qtyReq })
+          table.insert(reagentsList, { itemID = r.itemID, qty = qtyReq, tierItemIDs = tierItemIDs })
         end
       end
     end
@@ -294,27 +295,27 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
   local craftsNeeded = ns.Data.ceilDiv(desiredItems, yieldMin)
   if craftsNeeded <= 0 then return end
 
-  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
-  if qualityMode ~= QUALITY_MODE_SPECIFIC then
-    targetQuality = nil
-  end
-
   for _, r in ipairs(reagentsList) do
     if r and r.itemID and r.qty then
       local itemID = r.itemID
+      local tierItemIDs = type(r.tierItemIDs) == "table" and r.tierItemIDs or nil
       local qty = (r.qty * craftsNeeded)
-      local reagentQuality = (targetQuality and ns.Data.ItemSupportsTrackedQuality and ns.Data.ItemSupportsTrackedQuality(itemID))
-        and targetQuality or nil
-      local key = MakeReagentKey(itemID, reagentQuality)
+      local key = MakeReagentKey(itemID, nil)
       local entry = addon.cache.reagents[key]
       if type(entry) ~= "table" then
         entry = {
           key = key,
           itemID = itemID,
-          targetQuality = reagentQuality,
+          baseItemID = itemID,
+          tierItemIDs = tierItemIDs,
+          qualityItemID = nil,
+          targetQuality = nil,
           need = 0,
         }
         addon.cache.reagents[key] = entry
+      else
+        entry.baseItemID = entry.baseItemID or itemID
+        entry.tierItemIDs = entry.tierItemIDs or tierItemIDs
       end
       entry.need = (entry.need or 0) + qty
     end

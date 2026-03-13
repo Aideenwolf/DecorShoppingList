@@ -121,9 +121,10 @@ function ns.Snapshots.SnapshotRecipeToCache(addon, recipeID, force)
   if slots then
     for _, slot in ipairs(slots) do
       local r = ns.Data.PickRequiredReagent(slot)
+      local tierItemIDs = ns.Data.GetRequiredReagentTierItemIDs and ns.Data.GetRequiredReagentTierItemIDs(slot) or nil
       local qtyReq = (slot and slot.quantityRequired) or (r and r.quantityRequired) or 0
       if r and r.itemID and qtyReq and qtyReq > 0 then
-        table.insert(reagents, { itemID = r.itemID, qty = qtyReq })
+        table.insert(reagents, { itemID = r.itemID, qty = qtyReq, tierItemIDs = tierItemIDs })
       end
     end
   end
@@ -217,6 +218,7 @@ end
 function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
   if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return end
   opts = type(opts) == "table" and opts or {}
+  local includeQuality = (opts.skipQuality ~= true)
 
   local realmEntry = GetRealmEntry(addon)
   local entry = GetCharEntry(addon)
@@ -244,7 +246,9 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
       local info = C_Container.GetContainerItemInfo(bagID, slot)
       if info and info.itemID and info.stackCount then
         addCount(dest, info.itemID, info.stackCount)
-        addQualityCount(destByQuality, info.itemID, ns.Data.GetTrackedQualityFromContainerItem(bagID, slot, info), info.stackCount)
+        if includeQuality then
+          addQualityCount(destByQuality, info.itemID, ns.Data.GetTrackedQualityFromContainerItem(bagID, slot, info), info.stackCount)
+        end
       end
     end
     return true
@@ -415,49 +419,77 @@ function ns.Snapshots.GetTrackedCharacters(addon)
   return out, realm
 end
 
-function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
+function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality, tierItemIDs)
   if not (addon and addon.db and addon.db.global and addon.db.global.realms and itemID) then
-    return {}, 0
+    return {}, { [1] = 0, [2] = 0, [3] = 0, total = 0 }
   end
 
-  targetQuality = ns.Data.NormalizeTrackedQuality(targetQuality)
-  local targetName = (not targetQuality and ns.Data.ResolveItemGroupName and ns.Data.ResolveItemGroupName(addon, itemID)) or nil
+  local targetName = ns.Data.ResolveItemGroupName and ns.Data.ResolveItemGroupName(addon, itemID)
+  if not targetName or targetName == "" then
+    return {}, { [1] = 0, [2] = 0, [3] = 0, total = 0 }
+  end
 
   local realm = select(1, ns.Data.playerKey())
   local _, currentKey = ns.Data.playerKey()
   local _, currentClassToken = UnitClass("player")
   local realmData = realm and addon.db.global.realms[realm]
   local chars = realmData and realmData.chars
-  if not chars then return {}, 0 end
+  if not chars then
+    return {}, { [1] = 0, [2] = 0, [3] = 0, total = 0 }
+  end
 
-  local function sumBucket(bucket)
-    local total = 0
-    if type(bucket) ~= "table" then
-      return 0
-    end
-
-    if targetQuality then
-      total = total + (bucket[itemID] or 0)
-      return total
-    end
-
-    for candidateItemID, count in pairs(bucket) do
-      if type(candidateItemID) == "number" and type(count) == "number" and count > 0 then
-        local candidateName = ns.Data.ResolveItemGroupName and ns.Data.ResolveItemGroupName(addon, candidateItemID)
-        if candidateName == targetName then
-          total = total + count
-        end
+  local useModernQuality = ns.Data.UsesModernReagentQuality and ns.Data.UsesModernReagentQuality(itemID)
+  local trackedItemIDs = {}
+  if type(tierItemIDs) == "table" and next(tierItemIDs) then
+    for quality = 1, 3 do
+      if type(tierItemIDs[quality]) == "number" then
+        trackedItemIDs[quality] = tierItemIDs[quality]
       end
     end
-    return total
+  end
+
+  local function newCounts()
+    return { [1] = 0, [2] = 0, [3] = 0, total = 0 }
+  end
+
+  local function sumBucketCounts(entry, bucketName, bucket)
+    local counts = newCounts()
+    if type(bucket) ~= "table" then
+      return counts
+    end
+
+    if next(trackedItemIDs) then
+      for quality = 1, 3 do
+        local trackedItemID = trackedItemIDs[quality]
+        if trackedItemID then
+          local count = bucket[trackedItemID] or 0
+          counts[quality] = count
+          counts.total = counts.total + count
+        end
+      end
+      return counts
+    end
+
+    if not useModernQuality then
+      local count = bucket[itemID] or 0
+      counts.total = count
+      return counts
+    end
+
+    if ns.Data and ns.Data.SumQualityBucketByName then
+      ns.Data.SumQualityBucketByName(addon, entry and entry[bucketName], targetName, nil, counts)
+      counts.total = (counts[1] or 0) + (counts[2] or 0) + (counts[3] or 0)
+    end
+
+    return counts
   end
 
   local rows = {}
   for charKey, entry in pairs(chars) do
     if type(entry) == "table" then
-      local bags = sumBucket(entry.bags)
-      local bank = sumBucket(entry.bank)
-      local total = bags + bank
+      local bagCounts = sumBucketCounts(entry, "bagsByQuality", entry.bags)
+      local bankCounts = sumBucketCounts(entry, "bankByQuality", entry.bank)
+      local total = (bagCounts.total or 0) + (bankCounts.total or 0)
 
       if total > 0 then
         table.insert(rows, {
@@ -465,8 +497,14 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
           charName = tostring(charKey or ""):match("^([^-]+)") or tostring(charKey or "?"),
           classToken = entry.classToken or ((charKey == currentKey) and currentClassToken or nil),
           lastSeen = tonumber(entry.lastSeen) or 0,
-          bags = bags,
-          bank = bank,
+          bags = bagCounts.total or 0,
+          bank = bankCounts.total or 0,
+          counts = {
+            [1] = (bagCounts[1] or 0) + (bankCounts[1] or 0),
+            [2] = (bagCounts[2] or 0) + (bankCounts[2] or 0),
+            [3] = (bagCounts[3] or 0) + (bankCounts[3] or 0),
+            total = total,
+          },
           total = total,
         })
       end
@@ -480,7 +518,7 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality)
     return tostring(a.charKey or "") < tostring(b.charKey or "")
   end)
 
-  local warbank = sumBucket(realmData.warbank)
+  local warbank = sumBucketCounts(realmData, "warbankByQuality", realmData.warbank)
 
   return rows, warbank
 end

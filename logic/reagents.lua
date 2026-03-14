@@ -4,6 +4,7 @@ ns = ns or {}
 ns.Reagents = ns.Reagents or {}
 local wipeTable = wipe
 
+local Catalog = LibStub and LibStub("LibDSLCatalog-1.0", true)
 local PT = LibStub and LibStub("LibPeriodicTable-3.1", true)
 
 local SOURCE_OVERRIDES = {
@@ -23,6 +24,16 @@ local PT_SOURCE_RULES = {
   { set = "Tradeskill.Gather.Milling", source = "Crafting", subSource = "Inscription" },
   { set = "Tradeskill.Gather.Disenchant", source = "Crafting", subSource = "Enchanting" },
 }
+
+local function GetReagentMetaKey(reagent)
+  if type(reagent) ~= "table" then
+    return nil
+  end
+  return reagent.key
+    or (type(reagent.baseItemID) == "number" and tostring(reagent.baseItemID))
+    or (type(reagent.itemID) == "number" and tostring(reagent.itemID))
+    or nil
+end
 
 local function PT_InSet(itemID, setName)
   if not (PT and itemID and setName) then return false end
@@ -73,6 +84,11 @@ end
 function ns.Reagents.GetSource(addon, itemID)
   if not itemID then return "Other", nil end
 
+  local catalogOverride = Catalog and Catalog.GetSourceOverride and Catalog:GetSourceOverride(itemID)
+  if type(catalogOverride) == "table" and catalogOverride.source then
+    return catalogOverride.source, catalogOverride.subSource
+  end
+
   local override = SOURCE_OVERRIDES[itemID]
   if override then
     return override.source, override.subSource
@@ -94,15 +110,25 @@ function ns.Reagents.GetSource(addon, itemID)
   end
 
   local function getCraftingSource()
-    if not (addon and addon.db and addon.db.profile) then
-      return nil, nil
-    end
-
-    local recipeID = addon.db.profile.recipeByItem and addon.db.profile.recipeByItem[itemID]
+    local recipeID = Catalog and Catalog.GetRecipeForOutput and Catalog:GetRecipeForOutput(itemID)
     local cache = ns.Data.EnsureRecipeCache and ns.Data.EnsureRecipeCache(addon)
+
+    if not recipeID and addon and addon.db and addon.db.profile then
+      recipeID = addon.db.profile.recipeByItem and addon.db.profile.recipeByItem[itemID]
+    end
 
     if type(recipeID) == "number" and type(cache) == "table" then
       local entry = cache[recipeID]
+      if type(entry) == "table" then
+        if isTransmuteRecipe(entry) then
+          return nil, nil
+        end
+        return "Crafting", entry.profession
+      end
+    end
+
+    if type(recipeID) == "number" and Catalog and Catalog.GetRecipe then
+      local entry = Catalog:GetRecipe(recipeID)
       if type(entry) == "table" then
         if isTransmuteRecipe(entry) then
           return nil, nil
@@ -119,6 +145,20 @@ function ns.Reagents.GetSource(addon, itemID)
           end
           return "Crafting", entry.profession
         end
+      end
+    end
+
+    if Catalog and Catalog.GetRecipeForOutput and Catalog.GetRecipe then
+      local catalogRecipeID = Catalog:GetRecipeForOutput(itemID)
+      if type(catalogRecipeID) == "number" then
+        local entry = Catalog:GetRecipe(catalogRecipeID)
+        if type(entry) == "table" then
+          if isTransmuteRecipe(entry) then
+            return nil, nil
+          end
+          return "Crafting", entry.profession
+        end
+        return "Crafting", nil
       end
     end
 
@@ -171,14 +211,14 @@ function ns.Reagents.GetSource(addon, itemID)
   end
 
   local function getCraftingSubSource()
-    local ptRule = GetPTRuleMatch(itemID, "Crafting")
-    if ptRule then
-      return ptRule.subSource
-    end
-
     local source, subSource = getCraftingSource()
     if source == "Crafting" and subSource then
       return subSource
+    end
+
+    local ptRule = GetPTRuleMatch(itemID, "Crafting")
+    if ptRule then
+      return ptRule.subSource
     end
 
     local _, _, subClassName, _, _, _, _, _, _, _, _, classID, subClassID = GetItemInfoInstant(itemID)
@@ -239,19 +279,6 @@ function ns.Reagents.GetSource(addon, itemID)
   end
 
   local function getTopLevelSource()
-    if PT then
-      if PT_InSet(itemID, "Tradeskill.Mat.BySource.Gather") then
-        return "Gathering"
-      end
-      if PT_InSet(itemID, "Tradeskill.Mat.BySource.Vendor") then
-        return "Vendor"
-      end
-    end
-
-    if getGatheringSubSource() then
-      return "Gathering"
-    end
-
     do
       local source = getCraftingSource()
       if source then
@@ -259,8 +286,23 @@ function ns.Reagents.GetSource(addon, itemID)
       end
     end
 
-    if getCraftingSubSource() then
+    local explicitGatheringSubSource = getGatheringSubSource()
+    if explicitGatheringSubSource then
+      return "Gathering"
+    end
+
+    local explicitCraftingSubSource = getCraftingSubSource()
+    if explicitCraftingSubSource then
       return "Crafting"
+    end
+
+    if PT then
+      if PT_InSet(itemID, "Tradeskill.Mat.BySource.Gather") then
+        return "Gathering"
+      end
+      if PT_InSet(itemID, "Tradeskill.Mat.BySource.Vendor") then
+        return "Vendor"
+      end
     end
 
     return "Other"
@@ -283,6 +325,9 @@ end
 function ns.Reagents.BuildDisplayOnly(addon)
   local collapsed = (addon.db.profile.window and addon.db.profile.window.collapsed) or {}
   local flat = {}
+  addon.cache = addon.cache or {}
+  addon.cache._reagentMeta = addon.cache._reagentMeta or {}
+  local metaCache = addon.cache._reagentMeta
 
   for _, reagent in pairs(addon.cache.reagents or {}) do
     local itemID = type(reagent) == "table" and reagent.itemID or nil
@@ -290,33 +335,54 @@ function ns.Reagents.BuildDisplayOnly(addon)
     local tierItemIDs = type(reagent) == "table" and reagent.tierItemIDs or nil
     local need = type(reagent) == "table" and reagent.need or 0
     if itemID then
-      local tooltipItemID = (ns.Data.GetReagentTooltipItemID and ns.Data.GetReagentTooltipItemID(addon, baseItemID, tierItemIDs)) or itemID
+      local metaKey = GetReagentMetaKey(reagent)
+      local meta = metaKey and metaCache[metaKey] or nil
+      if type(meta) ~= "table" then
+        local tooltipItemID = (ns.Data.GetReagentTooltipItemID and ns.Data.GetReagentTooltipItemID(addon, baseItemID, tierItemIDs)) or itemID
+        local rawName = ns.Data.GetItemNameWithCache(addon, tooltipItemID) or ns.Data.GetItemNameWithCache(addon, baseItemID) or ("Item " .. itemID)
+        local rarity = ns.Data.GetItemRarityWithCache(addon, tooltipItemID) or ns.Data.GetItemRarityWithCache(addon, itemID) or -1
+        local icon = (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(tooltipItemID or itemID)) or GetItemIcon(tooltipItemID or itemID)
+        local expacID = ns.Data.GetItemExpansionID(baseItemID or itemID)
+        local expacName = ns.Data.GetExpansionName(expacID)
+        local source, subSource = ns.Reagents.GetSource(addon, baseItemID or itemID)
+        meta = {
+          tooltipItemID = tooltipItemID,
+          rawName = rawName,
+          rarity = rarity,
+          icon = icon,
+          expacID = expacID,
+          expacName = expacName,
+          source = source,
+          subSource = subSource,
+        }
+        if metaKey then
+          metaCache[metaKey] = meta
+        end
+      end
+
       local have = (ns.Data.GetReagentHaveCount and ns.Data.GetReagentHaveCount(addon, baseItemID, tierItemIDs)) or 0
       local remaining = math.max(0, (need or 0) - (have or 0))
-      local rawName = ns.Data.GetItemNameWithCache(addon, tooltipItemID) or ns.Data.GetItemNameWithCache(addon, baseItemID) or ("Item " .. itemID)
       local isComplete = (remaining <= 0)
-      local displayName = isComplete and rawName or ns.Data.ColorizeByRarityWithCache(addon, tooltipItemID or itemID, rawName)
-      local rarity = ns.Data.GetItemRarityWithCache(addon, tooltipItemID) or ns.Data.GetItemRarityWithCache(addon, itemID) or -1
-      local expacID = ns.Data.GetItemExpansionID(baseItemID or itemID)
-      local expacName = ns.Data.GetExpansionName(expacID)
-      local source, subSource = ns.Reagents.GetSource(addon, baseItemID or itemID)
+      local rawName = meta.rawName
+      local displayName = rawName
 
       table.insert(flat, {
         reagentKey = reagent.key or tostring(itemID),
         itemID = itemID,
         baseItemID = baseItemID,
         tierItemIDs = tierItemIDs,
-        tooltipItemID = tooltipItemID,
+        tooltipItemID = meta.tooltipItemID,
         name = displayName,
         rawName = rawName,
+        icon = meta.icon,
         need = need or 0,
         have = have or 0,
         remaining = remaining,
-        rarity = rarity,
-        expacID = expacID,
-        expacName = expacName,
-        source = source,
-        subSource = subSource,
+        rarity = meta.rarity,
+        expacID = meta.expacID,
+        expacName = meta.expacName,
+        source = meta.source,
+        subSource = meta.subSource,
         isComplete = isComplete,
       })
     end
@@ -336,7 +402,15 @@ function ns.Reagents.SortAndBuildDisplay(flat, mode, collapsed, getExpansionName
 end
 
 function ns.Reagents.RecomputeReagentsOnly(addon)
-  if not (addon and addon.cache and addon.cache.reagents) then return end
+  if not (addon and addon.cache) then return end
+  if addon.cache._reagentsStale or not addon.cache.reagents then
+    if ns.RebuildReagentNeedMap then
+      ns.RebuildReagentNeedMap(addon)
+    else
+      return
+    end
+  end
+  if not addon.cache.reagents then return end
   addon.cache.reagentsList = addon.cache.reagentsList or {}
   addon.cache.reagentsDisplay = addon.cache.reagentsDisplay or {}
   wipeTable(addon.cache.reagentsList)

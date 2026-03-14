@@ -3,6 +3,9 @@ ns = ns or {}
 local L = LibStub("AceLocale-3.0"):GetLocale("DecorShoppingList")
 
 ns.Recipes = ns.Recipes or {}
+local Catalog = LibStub and LibStub("LibDSLCatalog-1.0", true)
+
+-- Goal quality tracking ------------------------------------------------------
 
 local QUALITY_MODE_ANY = "any"
 local QUALITY_MODE_SPECIFIC = "specific"
@@ -60,6 +63,10 @@ local function GetTrackedHaveCount(addon, goal, itemID)
     return ns.GetHaveCountByQuality(addon, itemID, targetQuality)
   end
 
+  if ns.Data.UsesModernReagentQuality and ns.Data.UsesModernReagentQuality(itemID) then
+    return ns.GetHaveCountByName(addon, itemID)
+  end
+
   return ns.GetHaveCount(addon, itemID)
 end
 
@@ -71,9 +78,84 @@ local function GetGoalQualityBreakdown(addon, goal, itemID)
   return ns.GetHaveQualityBreakdown(addon, itemID)
 end
 
-local function MakeReagentKey(itemID)
-  return tostring(itemID)
+local function SyncGoalHaveBaseline(addon, goal, itemID)
+  if not (addon and type(goal) == "table") then
+    return
+  end
+
+  itemID = itemID or goal.itemID
+  if not itemID then
+    return
+  end
+
+  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+  local haveKey = (qualityMode == QUALITY_MODE_SPECIFIC and targetQuality)
+    and (tostring(itemID) .. ":" .. tostring(targetQuality))
+    or tostring(itemID)
+  local baselineHave = GetTrackedHaveCount(addon, goal, itemID)
+
+  addon.lastHave = addon.lastHave or {}
+  addon.lastHave[haveKey] = baselineHave
+
+  goal.baselineItemID = itemID
+  goal.baselineQualityMode = qualityMode
+  goal.baselineTargetQuality = targetQuality
+  goal.baselineHave = baselineHave
 end
+
+local function UpdateGoalRemainingFromCurrentHave(addon, goal, itemID, trackedHave)
+  if not (addon and type(goal) == "table") then
+    return false
+  end
+
+  itemID = itemID or goal.itemID
+  if not itemID then
+    return false
+  end
+
+  local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+  local baselineMatches = goal.baselineItemID == itemID
+    and goal.baselineQualityMode == qualityMode
+    and goal.baselineTargetQuality == targetQuality
+
+  if not baselineMatches or type(goal.baselineHave) ~= "number" then
+    SyncGoalHaveBaseline(addon, goal, itemID)
+  end
+
+  local haveNow = tonumber(trackedHave)
+  if haveNow == nil then
+    haveNow = GetTrackedHaveCount(addon, goal, itemID)
+  end
+
+  local baselineHave = tonumber(goal.baselineHave) or 0
+  local craftedTotal = math.max(0, haveNow - baselineHave)
+  local computedRemaining = math.max(0, (goal.qty or 0) - craftedTotal)
+  local currentRemaining = tonumber(goal.remaining) or 0
+
+  if computedRemaining < currentRemaining then
+    goal.remaining = computedRemaining
+    return true
+  end
+
+  return false
+end
+
+local function UpdateGoalRemainingFromCraftedCount(goal)
+  if type(goal) ~= "table" then
+    return false
+  end
+
+  local craftedCount = tonumber(goal.craftedCount) or 0
+  local computedRemaining = math.max(0, (goal.qty or 0) - craftedCount)
+  local currentRemaining = tonumber(goal.remaining) or 0
+  if computedRemaining < currentRemaining then
+    goal.remaining = computedRemaining
+    return true
+  end
+  return false
+end
+
+-- Recipe display/cache helpers ----------------------------------------------
 
 local function GetRecipeDisplayName(addon, goal)
   if goal.itemID then
@@ -87,6 +169,13 @@ local function GetRecipeDisplayName(addon, goal)
   end
 
   if goal.recipeID then
+    if Catalog and Catalog.GetRecipe then
+      local recipe = Catalog:GetRecipe(goal.recipeID)
+      if type(recipe) == "table" and recipe.recipeName then
+        return recipe.recipeName
+      end
+    end
+
     local schematic = ns.Data.GetRecipeSchematicSafe(goal.recipeID)
     if schematic and schematic.name then
       return schematic.name
@@ -99,7 +188,10 @@ local function GetRecipeDisplayName(addon, goal)
   return "Unknown"
 end
 
-local function PrepareRecipeCacheTables(addon)
+local function PrepareRecipeCacheTables(addon, opts)
+  opts = type(opts) == "table" and opts or nil
+  local skipReagents = opts and opts.skipReagents
+
   addon.cache = addon.cache or {}
   addon.cache.recipes = addon.cache.recipes or {}
   addon.cache.recipesDisplay = addon.cache.recipesDisplay or {}
@@ -108,9 +200,14 @@ local function PrepareRecipeCacheTables(addon)
   addon.cache.reagentsDisplay = addon.cache.reagentsDisplay or {}
   wipeTable(addon.cache.recipes)
   wipeTable(addon.cache.recipesDisplay)
-  wipeTable(addon.cache.reagents)
-  wipeTable(addon.cache.reagentsList)
-  wipeTable(addon.cache.reagentsDisplay)
+  if not skipReagents then
+    wipeTable(addon.cache.reagents)
+    wipeTable(addon.cache.reagentsList)
+    wipeTable(addon.cache.reagentsDisplay)
+    addon.cache._reagentsStale = nil
+  else
+    addon.cache._reagentsStale = true
+  end
 
   addon.cache._sortCache = addon.cache._sortCache or {}
   addon.cache._sortCache.recipesByProf = addon.cache._sortCache.recipesByProf or {}
@@ -167,6 +264,13 @@ end
 function ns.Recipes.GetRecipeOutputItemID(recipeID)
   if not recipeID then return nil end
 
+  if Catalog and Catalog.GetOutputItemForRecipe then
+    local outputItemID = Catalog:GetOutputItemForRecipe(recipeID)
+    if outputItemID then
+      return outputItemID
+    end
+  end
+
   local schematic = ns.Data.GetRecipeSchematicSafe(recipeID)
   if schematic then
     if schematic.outputItemID then return schematic.outputItemID end
@@ -195,71 +299,56 @@ function ns.Recipes.SetGoalForRecipe(addon, recipeID, deltaQty, opts)
 
   if not g then
     if delta == 0 then return end
-    g = { recipeID = recipeID, qty = 0, remaining = 0, profession = "Unknown" }
+    g = { recipeID = recipeID, qty = 0, remaining = 0, profession = "Unknown", craftedCount = 0 }
     goals[key] = g
   end
 
   g.qty = math.max(0, (g.qty or 0) + delta)
-  g.remaining = math.max(0, (g.remaining or 0) + delta)
+  g.craftedCount = math.max(0, tonumber(g.craftedCount) or 0)
+  g.remaining = math.max(0, g.qty - g.craftedCount)
   SetGoalQualityTracking(g, hasTrackingUpdate and opts.qualityMode or g.qualityMode, hasTrackingUpdate and opts.targetQuality or g.targetQuality)
 
   local cache = ns.Data.EnsureRecipeCache(addon)
-  if cache and cache[recipeID] then
+  local hasCatalogRecipe = Catalog and Catalog.HasRecipe and Catalog:HasRecipe(recipeID)
+  if not hasCatalogRecipe and ns.Snapshots and ns.Snapshots.IsPlayerProfessionUIOpen and ns.Snapshots.IsPlayerProfessionUIOpen() then
+    ns.Snapshots.SnapshotRecipeToCache(addon, recipeID, true)
+    cache = ns.Data.EnsureRecipeCache(addon)
+  end
+  if (cache and cache[recipeID]) or hasCatalogRecipe then
     g.needsScan = nil
   else
-    if ns.Snapshots.IsPlayerProfessionUIOpen() then
-      ns.Snapshots.SnapshotRecipeToCache(addon, recipeID, true)
-      if cache and cache[recipeID] then
-        g.needsScan = nil
-      else
-        g.needsScan = true
-      end
-    else
-      g.needsScan = true
-    end
+    g.needsScan = true
   end
-
-  ns.IsRecipeLearned(addon, recipeID)
-  ns.Data.EnsureProfessionsLoaded()
-
-  do
-    local profName, profID = ns.Snapshots.GetProfessionForRecipe(recipeID)
-    local normalized = ns.Data.NormalizeProfessionName(profName)
-    if normalized and normalized ~= "Unknown" then
-      g.profession = normalized
-      g.professionID = profID
-    end
-  end
-
-  local out = ns.GetRecipeOutputItemID(recipeID)
-  if out then
-    g.itemID = out
-    addon.db.profile.recipeByItem[out] = recipeID
-  end
-
-  do
-    local schematic = ns.Data.GetRecipeSchematicSafe(recipeID)
-    if schematic and schematic.name then
-      g.name = schematic.name
-    end
-
-    if out then
-      local itemName = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(out)) or GetItemInfo(out)
-      if itemName then
-        g.name = itemName
-      elseif C_Item and C_Item.RequestLoadItemDataByID then
-        C_Item.RequestLoadItemDataByID(out)
-      end
+  if not g.name and Catalog and Catalog.GetRecipe then
+    local recipe = Catalog:GetRecipe(recipeID)
+    if type(recipe) == "table" and recipe.recipeName then
+      g.name = recipe.recipeName
     end
   end
 
   if g.qty == 0 then
     goals[key] = nil
-    addon:MarkDirty()
+    addon:MarkDirty("goals")
     return
   end
 
-  addon:MarkDirty()
+  addon:MarkDirty("goals")
+end
+
+function ns.Recipes.NoteCraftSucceeded(addon, recipeID, quantity)
+  if not (addon and recipeID) then
+    return false
+  end
+
+  local goal = ns.Recipes.GetGoalForRecipe(addon, recipeID)
+  if type(goal) ~= "table" then
+    return false
+  end
+
+  local crafted = math.max(1, tonumber(quantity) or 1)
+  goal.craftedCount = math.max(0, tonumber(goal.craftedCount) or 0) + crafted
+  UpdateGoalRemainingFromCraftedCount(goal)
+  return true
 end
 
 function ns.Recipes.ApplyCompletionByInventoryDelta(addon)
@@ -268,37 +357,20 @@ function ns.Recipes.ApplyCompletionByInventoryDelta(addon)
 
   for goalKey, goal in pairs(goals) do
     if type(goal) == "table" then
-      local itemID = goal.itemID
-      if not itemID and goal.recipeID then
-        itemID = ns.GetRecipeOutputItemID(goal.recipeID)
-        if itemID then goal.itemID = itemID end
+      if UpdateGoalRemainingFromCraftedCount(goal) then
+        touched = true
       end
 
-      if itemID then
-        local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
-        local haveNow = GetTrackedHaveCount(addon, goal, itemID)
-        local haveKey = (qualityMode == QUALITY_MODE_SPECIFIC and targetQuality)
-          and (tostring(itemID) .. ":" .. tostring(targetQuality))
-          or tostring(itemID)
-        local havePrev = addon.lastHave[haveKey]
-
-        if havePrev == nil then
-          addon.lastHave[haveKey] = haveNow
-        else
-          local delta = haveNow - havePrev
-          if delta > 0 and (goal.remaining or 0) > 0 then
-            goal.remaining = math.max(0, (goal.remaining or 0) - delta)
-            touched = true
-          end
-          addon.lastHave[haveKey] = haveNow
+      if (goal.remaining or 0) <= 0 then
+        local itemID = goal.itemID
+        if not itemID and goal.recipeID then
+          itemID = ns.GetRecipeOutputItemID(goal.recipeID)
+          if itemID then goal.itemID = itemID end
         end
-
-        if (goal.remaining or 0) <= 0 then
-          local rawName = ns.Data.GetItemNameWithCache(addon, itemID) or goal.name or ("Item " .. itemID)
-          goals[goalKey] = nil
-          addon:Print(string.format(L["COMPLETED_RECIPE"], rawName))
-          touched = true
-        end
+        local rawName = (itemID and ns.Data.GetItemNameWithCache(addon, itemID)) or goal.name or ("Recipe " .. tostring(goal.recipeID or "?"))
+        goals[goalKey] = nil
+        addon:Print(string.format(L["COMPLETED_RECIPE"], rawName))
+        touched = true
       end
     end
   end
@@ -313,9 +385,28 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
   if not recipeID or desiredItems <= 0 then return end
 
   local yieldMin, reagentsList
+  local catalogRecipe = Catalog and Catalog.GetRecipe and Catalog:GetRecipe(recipeID)
+
+  if type(catalogRecipe) == "table" then
+    local catalogYieldMin = Catalog.GetYieldRangeForRecipe and select(1, Catalog:GetYieldRangeForRecipe(recipeID)) or nil
+    local catalogReagents = Catalog.GetReagentsForRecipe and Catalog:GetReagentsForRecipe(recipeID) or catalogRecipe.reagents
+    if type(catalogReagents) == "table" and #catalogReagents > 0 then
+      yieldMin = catalogYieldMin or catalogRecipe.outputQuantity or 1
+      reagentsList = {}
+      for _, reagent in ipairs(catalogReagents) do
+        if type(reagent) == "table" and reagent.itemID then
+          table.insert(reagentsList, {
+            itemID = reagent.itemID,
+            qty = reagent.qty or reagent.quantity or 0,
+            tierItemIDs = reagent.tierItemIDs,
+          })
+        end
+      end
+    end
+  end
 
   local schematic = ns.Data.GetRecipeSchematicSafe(recipeID)
-  if schematic then
+  if (not reagentsList or #reagentsList == 0) and schematic then
     yieldMin = 1
     if schematic.quantityMin and schematic.quantityMin > 0 then
       yieldMin = schematic.quantityMin
@@ -361,7 +452,7 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
       local itemID = r.itemID
       local tierItemIDs = type(r.tierItemIDs) == "table" and r.tierItemIDs or nil
       local qty = (r.qty * craftsNeeded)
-      local key = MakeReagentKey(itemID)
+      local key = tostring(itemID)
       local entry = addon.cache.reagents[key]
       if type(entry) ~= "table" then
         entry = {
@@ -379,6 +470,27 @@ function ns.Recipes.AccumulateReagentsForRecipe(addon, recipeID, desiredItems, d
       entry.need = (entry.need or 0) + qty
     end
   end
+end
+
+function ns.Recipes.RebuildReagentNeedMap(addon)
+  if not addon then return end
+  addon.cache = addon.cache or {}
+  addon.cache.reagents = addon.cache.reagents or {}
+  wipeTable(addon.cache.reagents)
+
+  local goals = addon.db and addon.db.profile and addon.db.profile.goals
+  if type(goals) ~= "table" then
+    addon.cache._reagentsStale = nil
+    return
+  end
+
+  for _, goal in pairs(goals) do
+    if type(goal) == "table" and (goal.remaining or 0) > 0 and goal.recipeID then
+      ns.AccumulateReagentsForRecipe(addon, goal.recipeID, goal.remaining or 0, 0, goal)
+    end
+  end
+
+  addon.cache._reagentsStale = nil
 end
 
 function ns.Recipes.RecomputeDisplayOnly(addon)
@@ -488,8 +600,10 @@ function ns.Recipes.RecomputeDisplayOnly(addon)
   ReleaseTempTable(byProf)
 end
 
-function ns.Recipes.RecomputeCaches(addon)
-  PrepareRecipeCacheTables(addon)
+function ns.Recipes.RecomputeCaches(addon, opts)
+  opts = type(opts) == "table" and opts or nil
+  local skipReagents = opts and opts.skipReagents
+  PrepareRecipeCacheTables(addon, opts)
 
   addon.db.profile.window = addon.db.profile.window or {}
   addon.db.profile.window.collapsed = addon.db.profile.window.collapsed or {}
@@ -497,6 +611,7 @@ function ns.Recipes.RecomputeCaches(addon)
   local collapsed = addon.db.profile.window.collapsed
   local byProf = AcquireTempTable()
   local memo = AcquireRecipeMemo()
+  local completedGoalKeys = AcquireTempTable()
 
   local function MemoProfName(recipeID)
     if not recipeID then return "Unknown" end
@@ -625,7 +740,15 @@ function ns.Recipes.RecomputeCaches(addon)
         local prof = ns.Data.NormalizeProfessionName(goal.profession) or "Unknown"
         if prof ~= "Unknown" then goal.profession = prof end
         local qualityMode, targetQuality = NormalizeGoalQualityTracking(goal)
+        UpdateGoalRemainingFromCraftedCount(goal)
         local trackedHave = GetTrackedHaveCount(addon, goal, itemID)
+        if (goal.remaining or 0) <= 0 then
+          completedGoalKeys[#completedGoalKeys + 1] = "r:" .. tostring(goal.recipeID)
+        end
+
+        if (goal.remaining or 0) <= 0 then
+          -- Skip rendering completed goals; they will be removed after the loop.
+        else
         local qualityBreakdown = GetGoalQualityBreakdown(addon, goal, itemID)
         local isDecor = itemID and ns.Data.IsDecorItem(itemID) or false
 
@@ -641,6 +764,7 @@ function ns.Recipes.RecomputeCaches(addon)
         end
 
         local pInfo = ns.GetProfessionInfo and ns.GetProfessionInfo(prof) or nil
+        local learned = goal.recipeID and ns.IsRecipeLearned(addon, goal.recipeID) and true or false
         local row = {
           name = name,
           rawName = goal.name or baseName,
@@ -651,6 +775,7 @@ function ns.Recipes.RecomputeCaches(addon)
           profession = prof,
           professionIcon = pInfo and pInfo.icon or nil,
           rarity = rarity,
+          learned = learned,
           missing = missingRecipe,
           expacID = expacID,
           expacName = expacName,
@@ -667,16 +792,12 @@ function ns.Recipes.RecomputeCaches(addon)
         table.insert(byProf[prof], row)
         table.insert(addon.cache.recipes, row)
 
-        if goal.recipeID then
+        if (not skipReagents) and goal.recipeID then
           local cache = ns.Data.EnsureRecipeCache(addon)
           local entry = cache and cache[goal.recipeID]
+          local hasCatalogRecipe = Catalog and Catalog.HasRecipe and Catalog:HasRecipe(goal.recipeID)
 
-          if not entry and ns.Snapshots.IsPlayerProfessionUIOpen() then
-            ns.Snapshots.SnapshotRecipeToCache(addon, goal.recipeID, false)
-            entry = cache and cache[goal.recipeID]
-          end
-
-          if entry then
+          if entry or hasCatalogRecipe then
             goal.needsScan = nil
             row.needsScan = nil
             ns.AccumulateReagentsForRecipe(addon, goal.recipeID, goal.remaining or 0, 0, goal)
@@ -685,8 +806,13 @@ function ns.Recipes.RecomputeCaches(addon)
             row.needsScan = true
           end
         end
+        end
       end
     end
+  end
+
+  for _, goalKey in ipairs(completedGoalKeys) do
+    addon.db.profile.goals[goalKey] = nil
   end
 
   local profNames = CollectSortedProfessionNames(byProf)
@@ -704,9 +830,14 @@ function ns.Recipes.RecomputeCaches(addon)
     local list = byProf[profName]
     local profCache = addon.cache._sortCache.recipesByProf
     local rMode = (addon.db.profile.window and addon.db.profile.window.recipeSort) or "N"
-    local sig = ns.Sorting.BuildRecipeSortSignature(list, rMode)
-
     local entry = profCache[profName]
+    local sig = (rMode ~= "E") and ns.Sorting.BuildRecipeSortSignature(list, rMode) or nil
+    if rMode == "E" and entry and entry.order then
+      ReleaseTempTable(entry.order)
+      profCache[profName] = nil
+      entry = nil
+    end
+
     if entry and entry.sig == sig and entry.order then
       local map = AcquireTempTable()
       for _, r in ipairs(list) do
@@ -736,14 +867,19 @@ function ns.Recipes.RecomputeCaches(addon)
 
     if not entry then
       ns.Sorting.SortRecipeList(list, rMode)
-      local order = AcquireTempTable()
-      for _, r in ipairs(list) do
-        table.insert(order, tostring(r.recipeID or r.itemID or r.name or ""))
-      end
-      if profCache[profName] and profCache[profName].order then
+      if rMode ~= "E" then
+        local order = AcquireTempTable()
+        for _, r in ipairs(list) do
+          table.insert(order, tostring(r.recipeID or r.itemID or r.name or ""))
+        end
+        if profCache[profName] and profCache[profName].order then
+          ReleaseTempTable(profCache[profName].order)
+        end
+        profCache[profName] = { sig = sig, order = order }
+      elseif profCache[profName] and profCache[profName].order then
         ReleaseTempTable(profCache[profName].order)
+        profCache[profName] = nil
       end
-      profCache[profName] = { sig = sig, order = order }
     end
 
     if not collapsed["PROF:" .. profName] and not collapsed[profName] then
@@ -778,7 +914,9 @@ function ns.Recipes.RecomputeCaches(addon)
     end
   end
 
-  ns.Reagents.BuildDisplayOnly(addon)
+  if not skipReagents then
+    ns.Reagents.BuildDisplayOnly(addon)
+  end
 
   for _, profName in ipairs(profNames) do
     local list = byProf[profName]
@@ -788,6 +926,7 @@ function ns.Recipes.RecomputeCaches(addon)
   end
   ReleaseTempTable(profNames)
   ReleaseTempTable(byProf)
+  ReleaseTempTable(completedGoalKeys)
   ReleaseRecipeMemo(memo)
 end
 
@@ -811,9 +950,13 @@ function ns.Recipes.GetGoalQualityBreakdown(addon, goal, itemID)
   return GetGoalQualityBreakdown(addon, goal, itemID)
 end
 
+-- Public API -----------------------------------------------------------------
+
 ns.GetRecipeOutputItemID = ns.Recipes.GetRecipeOutputItemID
 ns.SetGoalForRecipe = ns.Recipes.SetGoalForRecipe
+ns.NoteCraftSucceeded = ns.Recipes.NoteCraftSucceeded
 ns.ApplyCompletionByInventoryDelta = ns.Recipes.ApplyCompletionByInventoryDelta
 ns.AccumulateReagentsForRecipe = ns.Recipes.AccumulateReagentsForRecipe
+ns.RebuildReagentNeedMap = ns.Recipes.RebuildReagentNeedMap
 ns.RecomputeDisplayOnly = ns.Recipes.RecomputeDisplayOnly
 ns.RecomputeCaches = ns.Recipes.RecomputeCaches

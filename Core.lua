@@ -12,8 +12,6 @@ local defaults = {
       point="CENTER", relPoint="CENTER", x=0, y=0, w=360, h=420,
       minimized=false,
       view="recipes",
-
-      -- ADD THESE:
       reagentSort = "E",
       collapsed = {},
     },
@@ -44,11 +42,41 @@ local defaults = {
 }
 
 local function NewDirtyFlags()
-  return { full = false, inventory = false, display = false }
+  return { full = false, goals = false, inventory = false, display = false }
+end
+
+local function NowSeconds()
+  if GetTimePreciseSec then
+    return GetTimePreciseSec()
+  end
+  if GetTime then
+    return GetTime()
+  end
+  return 0
+end
+
+local function ReportPerf(addon, label, startedAt)
+  if not (addon and label and startedAt) then return end
+  local elapsed = (NowSeconds() - startedAt) * 1000
+  if elapsed < 12 then
+    return
+  end
+
+  addon._dslPerfReport = addon._dslPerfReport or {}
+  local lastAt = addon._dslPerfReport[label] or 0
+  local now = NowSeconds()
+  if (now - lastAt) < 1.0 then
+    return
+  end
+
+  addon._dslPerfReport[label] = now
+  if addon.Print then
+    addon:Print(string.format("DSL perf: %s %.1fms", tostring(label), elapsed))
+  end
 end
 
 local function HasDirtyFlags(flags)
-  return flags and (flags.full or flags.inventory or flags.display)
+  return flags and (flags.full or flags.goals or flags.inventory or flags.display)
 end
 
 local function FormatLastSeen(ts)
@@ -205,30 +233,70 @@ local function HasTrackedQualityGoals(addon)
   return false
 end
 
-local function IsInventoryRelevantUIOpen()
-  if ns.ListWindow and ns.ListWindow.IsShown and ns.ListWindow:IsShown() then
-    return true
-  end
-  if (_G.ProfessionsFrame and _G.ProfessionsFrame:IsShown())
-      or (_G.TradeSkillFrame and _G.TradeSkillFrame:IsShown()) then
-    return true
-  end
+local function ShouldDoExpensiveInventoryWork()
   return false
 end
 
-local function ShouldDoExpensiveInventoryWork()
-  return IsInventoryRelevantUIOpen()
+local function ShouldIncludeInventoryQuality(addon)
+  return HasTrackedQualityGoals(addon) and ShouldDoExpensiveInventoryWork()
 end
 
-local function QueueInventorySnapshot(addon, delay)
+local function BuildInventorySnapshotOpts(addon, extraOpts)
+  local opts = extraOpts or {}
+  opts.skipQuality = not ShouldIncludeInventoryQuality(addon)
+  return opts
+end
+
+local function QueueInventorySnapshot(addon, delay, extraOpts)
   if not addon then return end
-  local includeQuality = HasTrackedQualityGoals(addon) and ShouldDoExpensiveInventoryWork()
-  QueueSnapshotRequest(addon, "inventory", delay or 0.25, {
-    skipQuality = not includeQuality,
-  })
+  QueueSnapshotRequest(addon, "inventory", delay or 0.25, BuildInventorySnapshotOpts(addon, extraOpts))
 end
 
 ns.QueueInventorySnapshot = QueueInventorySnapshot
+
+local function IsCraftRefreshActive(addon)
+  if not addon then return false end
+  local now = GetTime and GetTime() or 0
+  local pending = addon._dslPendingCraft
+  if type(pending) == "table" and type(pending.expiresAt) == "number" and now <= pending.expiresAt then
+    return true
+  end
+  local recentAt = tonumber(addon._dslRecentCraftAt)
+  return recentAt ~= nil and (now - recentAt) <= 1.0
+end
+
+local function QueueCraftSettleRefresh(addon, delay)
+  if not addon then return end
+  if addon._dslCraftSettleTimer then
+    addon:CancelTimer(addon._dslCraftSettleTimer)
+  end
+
+  addon._dslCraftSettleTimer = addon:ScheduleTimer(function()
+    addon._dslCraftSettleTimer = nil
+    addon._dslRecentCraftAt = nil
+    addon._dslPendingCraft = nil
+
+    if addon.inCombat then
+      addon.dirtyFlags = addon.dirtyFlags or NewDirtyFlags()
+      addon.dirtyFlags.goals = true
+      if addon._dslPendingInventorySnapshot then
+        addon.dirtyFlags.inventory = true
+      end
+      return
+    end
+
+    addon:MarkDirty("goals")
+    if addon._dslPendingInventorySnapshot then
+      addon._dslPendingInventorySnapshot = nil
+      QueueInventorySnapshot(addon, 0.05)
+    end
+  end, delay or 0.5)
+end
+
+local function ShouldSkipReagentRebuild(addon)
+  local view = addon and addon.db and addon.db.profile and addon.db.profile.window and addon.db.profile.window.view
+  return view == "recipes"
+end
 
 local function TableHasEntries(t)
   return type(t) == "table" and next(t) ~= nil
@@ -287,8 +355,7 @@ end
 
 local function QueueBankSnapshot(addon, delay)
   if not addon then return end
-  local opts = GetBankSnapshotOpts(addon) or {}
-  opts.skipQuality = not (HasTrackedQualityGoals(addon) and ShouldDoExpensiveInventoryWork())
+  local opts = BuildInventorySnapshotOpts(addon, GetBankSnapshotOpts(addon) or {})
 
   addon._dslSnapshotRequests = addon._dslSnapshotRequests or {}
   local request = addon._dslSnapshotRequests.bank or {}
@@ -351,6 +418,7 @@ function DSL:OnEnable()
   self:RegisterEvent("PLAYER_REGEN_DISABLED")
   self:RegisterEvent("PLAYER_REGEN_ENABLED")
   self:RegisterEvent("PLAYER_LOGOUT", "OnPlayerLogout")
+  self:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED", "OnUnitSpellcastSucceeded")
 
   self:RegisterEvent("BAG_UPDATE_DELAYED", "OnInventoryChanged")
   self:RegisterEvent("BANKFRAME_OPENED", "OnBankOpened")
@@ -419,8 +487,9 @@ function DSL:OnInventoryChanged()
     return
   end
 
-  if not IsInventoryRelevantUIOpen() then
+  if IsCraftRefreshActive(self) then
     self._dslPendingInventorySnapshot = true
+    QueueCraftSettleRefresh(self, 0.5)
     return
   end
 
@@ -454,12 +523,34 @@ function DSL:OnPlayerLogout()
   end
 end
 
-function DSL:OnTradeSkillListUpdate(event)
-  if self._dslPendingInventorySnapshot then
-    self._dslPendingInventorySnapshot = nil
-    QueueInventorySnapshot(self, 0.05)
+function DSL:OnUnitSpellcastSucceeded(_, unit)
+  if unit ~= "player" then
+    return
   end
 
+  local pending = self._dslPendingCraft
+  if type(pending) ~= "table" or not pending.recipeID then
+    return
+  end
+
+  local now = GetTime and GetTime() or 0
+  if pending.expiresAt and now > pending.expiresAt then
+    self._dslPendingCraft = nil
+    return
+  end
+
+  if ns.NoteCraftSucceeded and ns.NoteCraftSucceeded(self, pending.recipeID, pending.quantity or 1) then
+    self._dslRecentCraftAt = now
+    pending.lastSuccessAt = now
+    pending.expiresAt = now + 2.0
+    QueueCraftSettleRefresh(self, 0.5)
+    return
+  end
+
+  self._dslPendingCraft = nil
+end
+
+function DSL:OnTradeSkillListUpdate(event)
   if self.inCombat then
     self.dirtyFlags = self.dirtyFlags or NewDirtyFlags()
     self.dirtyFlags.full = true
@@ -473,6 +564,10 @@ function DSL:OnTradeSkillListUpdate(event)
   self._dslProfessionRefreshTimer = self:ScheduleTimer(function()
     self._dslProfessionRefreshTimer = nil
     local forceRecipeScan = (event == "NEW_RECIPE_LEARNED")
+    if not forceRecipeScan and IsCraftRefreshActive(self) then
+      QueueCraftSettleRefresh(self, 0.5)
+      return
+    end
     if ns.SnapshotLearnedRecipes and ns.SnapshotLearnedRecipes(self, forceRecipeScan) then
       self:MarkDirty("full")
       return
@@ -487,6 +582,8 @@ function DSL:MarkDirty(reason)
 
   if reason == "inventory" then
     self.dirtyFlags.inventory = true
+  elseif reason == "goals" then
+    self.dirtyFlags.goals = true
   elseif reason == "display" then
     self.dirtyFlags.display = true
   else
@@ -506,20 +603,35 @@ function DSL:MarkDirty(reason)
 end
 
 function DSL:RecomputeAndRefresh()
+  local startedAt = NowSeconds()
   local flags = self.dirtyFlags or NewDirtyFlags()
   self.dirtyFlags = NewDirtyFlags()
 
   if flags.full then
     -- Full rebuild (goals/learned/display changes)
-    ns.ApplyCompletionByInventoryDelta(self)
     ns.RecomputeCaches(self)
     ns.RefreshListWindow(self)
+    ReportPerf(self, "full refresh", startedAt)
+    return
+  end
+
+  if flags.goals then
+    -- Goal-only refresh: rebuild recipe/reagent goal state without inventory completion pass.
+    ns.RecomputeCaches(self, { skipReagents = ShouldSkipReagentRebuild(self) })
+    ns.RefreshListWindow(self)
+    ReportPerf(self, "goal refresh", startedAt)
     return
   end
 
   if flags.inventory then
-    -- Inventory-only refresh: keep recipe/reagent NEEDS, refresh HAVE/remaining/completion
-    ns.ApplyCompletionByInventoryDelta(self)
+    -- Inventory-only refresh: update inventory-driven caches only.
+    if ShouldSkipReagentRebuild(self) then
+      if self.cache then
+        self.cache._reagentsStale = true
+      end
+      ReportPerf(self, "inventory refresh", startedAt)
+      return
+    end
 
     if ns.RecomputeReagentsOnly then
       ns.RecomputeReagentsOnly(self)
@@ -528,17 +640,22 @@ function DSL:RecomputeAndRefresh()
     end
 
     ns.RefreshListWindow(self)
+    ReportPerf(self, "inventory refresh", startedAt)
     return
   end
 
   if flags.display then
     -- Display-only refresh: collapse/sort/view changes should not touch math/state.
-    if ns.RecomputeDisplayOnly then
+    local view = self.db and self.db.profile and self.db.profile.window and self.db.profile.window.view
+    if view == "reagents" and self.cache and self.cache._reagentsStale and ns.RecomputeReagentsOnly then
+      ns.RecomputeReagentsOnly(self)
+    elseif ns.RecomputeDisplayOnly then
       ns.RecomputeDisplayOnly(self)
     else
       ns.RecomputeCaches(self)
     end
     ns.RefreshListWindow(self)
+    ReportPerf(self, "display refresh", startedAt)
     return
   end
 end

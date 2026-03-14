@@ -214,6 +214,24 @@ local function ReplaceIfChanged(dest, key, newValue)
   return true
 end
 
+local ScanContainer
+
+local function HasAccessibleContainerSlots(bagIDs)
+  if not (C_Container and C_Container.GetContainerNumSlots and type(bagIDs) == "table") then
+    return false
+  end
+
+  local totalSlots = 0
+  for _, bagID in ipairs(bagIDs) do
+    local ok, slots = pcall(C_Container.GetContainerNumSlots, bagID)
+    if ok and type(slots) == "number" and slots > 0 then
+      totalSlots = totalSlots + slots
+    end
+  end
+
+  return totalSlots > 0
+end
+
 local function RefreshContainerTotals(dest, countsKey, qualityKey, containerStates, bagIDs, includeQuality)
   local sawChanges = false
   for _, bagID in ipairs(bagIDs) do
@@ -234,7 +252,7 @@ local function RefreshContainerTotals(dest, countsKey, qualityKey, containerStat
   return changed
 end
 
-local function ScanContainer(containerStates, bagID, includeQuality)
+ScanContainer = function(containerStates, bagID, includeQuality)
   if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then
     return false
   end
@@ -555,7 +573,7 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
   local charState = GetCharSnapshotState(addon)
   local realmState = GetRealmSnapshotState(addon)
   local bagIDs = { 0, 1, 2, 3, 4, 5 }
-  if charState then
+  if charState and HasAccessibleContainerSlots(bagIDs) then
     changed = RefreshContainerTotals(entry, "bags", "bagsByQuality", charState.bags, bagIDs, includeQuality) or changed
   end
 
@@ -568,7 +586,7 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
   end
   if bankOpen then
     local bankIDs = { -1, 6, 7, 8, 9, 10, 11, 12, -3 }
-    if charState then
+    if charState and HasAccessibleContainerSlots(bankIDs) then
       changed = RefreshContainerTotals(entry, "bank", "bankByQuality", charState.bank, bankIDs, includeQuality) or changed
     end
   end
@@ -605,23 +623,6 @@ function ns.Snapshots.IsRecipeLearned(addon, recipeID)
   for _, entry in pairs(chars) do
     if entry and entry.recipes and entry.recipes[recipeID] == true then
       return true
-    end
-  end
-
-  if not ns.Snapshots.IsPlayerProfessionUIOpen() then
-    return false
-  end
-
-  local cur = chars[key]
-  if ns.Data.EnsureProfessionsLoaded() and C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
-    local info = C_TradeSkillUI.GetRecipeInfo(recipeID)
-    if info and info.learned ~= nil then
-      local learned = info.learned and true or false
-      if learned == true and cur then
-        cur.recipes = cur.recipes or {}
-        cur.recipes[recipeID] = true
-      end
-      return learned
     end
   end
 

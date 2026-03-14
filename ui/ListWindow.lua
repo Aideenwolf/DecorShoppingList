@@ -20,6 +20,14 @@ local ICON_RMB = "|A:newplayertutorial-icon-mouse-rightbutton:14:14|a"
 local ICON_SHIFT = "|cffffd100SHIFT|r"
 local ICON_CTRL  = "|cffffd100CTRL|r"
 local ICON_ALT   = "|cffffd100ALT|r"
+local DEFAULT_VISUAL_SETTINGS = {
+  backgroundMedia = "Solid",
+  backgroundColor = { 0.09, 0.09, 0.10, 0.25 },
+  borderColor = { 0.75, 0.75, 0.78, 1 },
+  scrollbarColor = { 0.75, 0.75, 0.78, 1 },
+  titleTabColor = { 0.20, 0.20, 0.22, 0.92 },
+  showRoundedBorder = true,
+}
 
 local function ColorizeCharacterName(name, classToken)
   if not name or name == "" then
@@ -71,6 +79,20 @@ local function GetVisibleRows(f)
   if rows < 1 then rows = 1 end
   if rows > ROWS_MAX then rows = ROWS_MAX end
   return rows
+end
+
+local function GetVisualOrDefault(addon)
+  return (ns.GetVisualSettings and ns.GetVisualSettings(addon)) or DEFAULT_VISUAL_SETTINGS
+end
+
+local function NowSeconds()
+  if GetTimePreciseSec then
+    return GetTimePreciseSec()
+  end
+  if GetTime then
+    return GetTime()
+  end
+  return 0
 end
 
 function ns.ApplyWindowStateFromDB(addon)
@@ -149,18 +171,6 @@ function ns.InitListWindow(addon)
     end
   end)
 
-  local function getVisual()
-    local fallback = {
-      backgroundMedia = "Solid",
-      backgroundColor = { 0.09, 0.09, 0.10, 0.25 },
-      borderColor = { 0.75, 0.75, 0.78, 1 },
-      scrollbarColor = { 0.75, 0.75, 0.78, 1 },
-      titleTabColor = { 0.20, 0.20, 0.22, 0.92 },
-      showRoundedBorder = true,
-    }
-    return (ns.GetVisualSettings and ns.GetVisualSettings(addon)) or fallback
-  end
-
   local function TintButtonTextures(btn, color, alphaScale)
     if not (btn and btn.GetRegions and color) then return end
     local a = (color[4] or 1) * (alphaScale or 1)
@@ -209,7 +219,7 @@ function ns.InitListWindow(addon)
   end
 
   local function ApplyWindowVisuals()
-    local v = getVisual()
+    local v = GetVisualOrDefault(addon)
     ApplyBackground(v.backgroundMedia or "Solid")
 
     local bg = v.backgroundColor or { 0.09, 0.09, 0.10, 0.25 }
@@ -323,6 +333,9 @@ function ns.InitListWindow(addon)
   local function setView(view)
     addon.db.profile.window.view = view
     addon:MarkDirty("display")
+    if view == "reagents" and addon.cache and addon.cache._reagentsStale then
+      return
+    end
     ns.RefreshListWindow(addon)
   end
 
@@ -693,7 +706,6 @@ function ns.InitListWindow(addon)
         else
           return
         end
-        addon:MarkDirty("full")
         return
       end
 
@@ -737,19 +749,8 @@ function ns.ShowListWindow(addon, show)
 
     if hasRenderableCache then
       ns.RefreshListWindow(addon)
-      addon:MarkDirty("display")
-      if addon._dslPendingInventorySnapshot and ns.QueueInventorySnapshot then
-        addon._dslPendingInventorySnapshot = nil
-        ns.QueueInventorySnapshot(addon, 0.35)
-      elseif not ns.QueueInventorySnapshot then
-        addon:MarkDirty("inventory")
-      end
     else
       addon:MarkDirty("full")
-      if addon._dslPendingInventorySnapshot and ns.QueueInventorySnapshot then
-        addon._dslPendingInventorySnapshot = nil
-        ns.QueueInventorySnapshot(addon, 0.5)
-      end
     end
   else
     f:Hide()
@@ -827,7 +828,9 @@ local function RenderDataRow(row, entry, view, addon)
   row.StatusIcon:ClearAllPoints()
 
   local tex
-  if view == "reagents" and entry.itemID then
+  if entry.icon then
+    tex = entry.icon
+  elseif view == "reagents" and entry.itemID then
     tex = C_Item.GetItemIconByID(entry.itemID)
   elseif view == "recipes" and entry.outputItemID then
     tex = C_Item.GetItemIconByID(entry.outputItemID)
@@ -835,7 +838,7 @@ local function RenderDataRow(row, entry, view, addon)
     tex = entry.iconTexture
   end
 
-  local isUnknownRecipe = (view == "recipes" and entry.recipeID and (not ns.IsRecipeLearned(addon, entry.recipeID)))
+  local isUnknownRecipe = (view == "recipes" and entry.recipeID and entry.learned == false)
 
   if view == "reagents" and entry.isComplete then
     row.StatusIcon:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
@@ -918,18 +921,20 @@ local function RenderDataRow(row, entry, view, addon)
 end
 
 function ns.RefreshListWindow(addon)
+  local startedAt = NowSeconds()
   EnsureDefaults(addon)
   local f = ns.ListWindow
   if not f then return end
   if not (f.RecipesTab and f.ReagentsTab and f.Alts and f.SortBar and f.Scroll and f.Rows) then return end
 
   local view = addon.db.profile.window.view or "recipes"
-  local visual = (ns.GetVisualSettings and ns.GetVisualSettings(addon)) or {}
+  local visual = GetVisualOrDefault(addon)
   local textSize = tonumber(visual.textSize) or 10
   local fontName = visual.textFont or "Friz Quadrata TT"
   local lsm = GetLSM()
   local fontPath = (lsm and lsm:Fetch("font", fontName, true)) or STANDARD_TEXT_FONT
   local fontFlags = (visual.textOutline == false) and "" or "OUTLINE"
+  local fontSignature = table.concat({ tostring(fontPath), tostring(textSize), tostring(fontFlags) }, "\31")
   local cHeader = (visual.textColor and visual.textColor.header) or { 1, 0.82, 0, 1 }
   local collapsedMap = addon.db.profile.window and addon.db.profile.window.collapsed
 
@@ -992,8 +997,11 @@ function ns.RefreshListWindow(addon)
 
   for i = 1, ROWS_MAX do
     local row = f.Rows[i]
-    row.Name:SetFont(fontPath, textSize, fontFlags)
-    row.Val:SetFont(fontPath, textSize, fontFlags)
+    if row._dslFontSignature ~= fontSignature then
+      row.Name:SetFont(fontPath, textSize, fontFlags)
+      row.Val:SetFont(fontPath, textSize, fontFlags)
+      row._dslFontSignature = fontSignature
+    end
 
     if i > visibleRows then
       row.data = nil
@@ -1018,6 +1026,17 @@ function ns.RefreshListWindow(addon)
         RenderDataRow(row, entry, view, addon)
       end
     end
+    end
+  end
+
+  local elapsed = (NowSeconds() - startedAt) * 1000
+  if addon and addon.Print and elapsed >= 8 then
+    addon._dslPerfReport = addon._dslPerfReport or {}
+    local lastAt = addon._dslPerfReport["list repaint"] or 0
+    local now = NowSeconds()
+    if (now - lastAt) >= 1.0 then
+      addon._dslPerfReport["list repaint"] = now
+      addon:Print(string.format("DSL perf: list repaint %.1fms", elapsed))
     end
   end
 end

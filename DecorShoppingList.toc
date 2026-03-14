@@ -4,7 +4,7 @@
 ## Author: RaniDay
 ## Version: 0.1.0
 ## Category: Professions
-## SavedVariables: DecorShoppingListDB
+## SavedVariables: DecorShoppingListDB, LibDSLCatalogCaptureDB
 ## OptionalDeps: Ace3, LibDataBroker-1.1, LibDBIcon-1.0, LibPeriodicTable-3.1, LibSharedMedia-3.0
 
 embeds.xml
@@ -14,6 +14,8 @@ plugins/PluginAPI.lua
 plugins/Homebound.lua
 plugins/Example.lua
 plugins/Template.lua
+
+catalog/LibDSLCatalog-1.0.lua
 
 data/professions.lua
 data/items.lua

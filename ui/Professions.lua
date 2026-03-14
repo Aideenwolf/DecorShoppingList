@@ -27,7 +27,7 @@ function ns.GetProfessionInfo(profName)
   return { name = profName, icon = PROF_ICON[profName] }
 end
 
--- Tracks the last recipe the player viewed/selected in any professions UI (normal or linked)
+-- Profession recipe selection/widget state -----------------------------------
 local currentRecipeID = nil
 local RefreshTrackWidget
 local QueueProfessionWidgetRefresh
@@ -57,6 +57,63 @@ end
 local function GetRecipeOutputItemID(recipeID)
   if not recipeID then return nil end
   return ns.GetRecipeOutputItemID and ns.GetRecipeOutputItemID(recipeID) or nil
+end
+
+local function ResolveRecipeIDFromSchematicForm(sf)
+  if not sf then return nil end
+
+  if type(sf.GetRecipeInfo) == "function" then
+    local ok, info = pcall(sf.GetRecipeInfo, sf)
+    if ok and type(info) == "table" and type(info.recipeID) == "number" and info.recipeID > 0 then
+      return info.recipeID
+    end
+  end
+
+  if type(sf.recipeID) == "number" and sf.recipeID > 0 then
+    return sf.recipeID
+  end
+
+  return nil
+end
+
+local function SetCurrentRecipeID(recipeID)
+  currentRecipeID = (type(recipeID) == "number" and recipeID > 0) and recipeID or nil
+  return currentRecipeID
+end
+
+local function QueuePendingCraft(addon, recipeID, quantity)
+  if not (addon and recipeID) then return end
+  local now = GetTime and GetTime() or 0
+  addon._dslPendingCraft = {
+    recipeID = recipeID,
+    quantity = math.max(1, tonumber(quantity) or 1),
+    queuedAt = now,
+    expiresAt = now + 8.0,
+  }
+end
+
+local function SyncTrackWidgetAttach(addon)
+  if not addon or addon.inCombat or InCombatLockdown() then return end
+  if ns._dslTryAttachTrackWidget then
+    ns._dslTryAttachTrackWidget()
+  end
+end
+
+local function ScheduleProfessionRecipeScan(addon, delay)
+  if not addon or addon._dslRecipeScanTimer then return end
+  addon._dslRecipeScanTimer = addon:ScheduleTimer(function()
+    addon._dslRecipeScanTimer = nil
+
+    local changed = false
+    if ns.ScanCurrentProfessionLearned then
+      changed = ns.ScanCurrentProfessionLearned(addon) and true or false
+    end
+
+    RefreshTrackWidget(addon)
+    if changed then
+      addon:MarkDirty("full")
+    end
+  end, delay or 0.05)
 end
 
 local function SetTrackButtonText(btn, qty)
@@ -187,9 +244,7 @@ local function SyncQualityControls(w, recipeID, goal)
   UpdateQualityButtons(w)
 end
 
--- -------------------------
--- Event hook (best-effort)
--- -------------------------
+-- Profession event hook -------------------------------------------------------
 
 local function ensureRecipeEventHook()
   if ns._dslRecipeEventFrame then return end
@@ -200,32 +255,14 @@ local function ensureRecipeEventHook()
   f:RegisterEvent("TRADE_SKILL_LIST_UPDATE")  -- recipe selection changed / schematic refreshed
   f:RegisterEvent("TRADE_SKILL_CLOSE")
 
-  local function syncTrackWidget()
+  local function QueueTrackWidgetScan()
     local addon = ns._dslAddonRef
     if not addon then return end
-    if addon.inCombat or InCombatLockdown() then return end
-    if ns._dslTryAttachTrackWidget then
-      ns._dslTryAttachTrackWidget()
-    end
-
-    if addon._dslRecipeScanTimer then return end
-    addon._dslRecipeScanTimer = addon:ScheduleTimer(function()
-      addon._dslRecipeScanTimer = nil
-
-      -- scan learned->true for THIS character only
-      local changed = false
-      if ns.ScanCurrentProfessionLearned then
-        changed = ns.ScanCurrentProfessionLearned(addon) and true or false
-      end
-
-      RefreshTrackWidget(addon)
-      if changed then
-        addon:MarkDirty("full")
-      end
-    end, 0.05)
+    SyncTrackWidgetAttach(addon)
+    ScheduleProfessionRecipeScan(addon, 0.05)
   end
 
-  local function refreshWidgetOnly()
+  local function QueueWidgetRefreshOnly()
     local addon = ns._dslAddonRef
     if not addon then return end
     QueueProfessionWidgetRefresh(addon, 0.05, false)
@@ -233,33 +270,28 @@ local function ensureRecipeEventHook()
 
   f:SetScript("OnEvent", function(_, event, recipeID)
     if event == "OPEN_RECIPE_RESPONSE" then
-      if type(recipeID) == "number" then
-        currentRecipeID = recipeID
-      end
-      syncTrackWidget()
+      SetCurrentRecipeID(recipeID)
+      QueueTrackWidgetScan()
       return
     end
 
     if event == "TRADE_SKILL_SHOW" then
-      syncTrackWidget()
+      QueueTrackWidgetScan()
       return
     end
 
     if event == "TRADE_SKILL_LIST_UPDATE" then
-      refreshWidgetOnly()
+      QueueWidgetRefreshOnly()
       return
     end
 
-    -- TRADE_SKILL_CLOSE
-    currentRecipeID = nil
+    SetCurrentRecipeID(nil)
   end)
 
   ns._dslRecipeEventFrame = f
 end
 
--- -------------------------
--- Find active schematic form
--- -------------------------
+-- Schematic form helpers ------------------------------------------------------
 
 local function GetActiveSchematicForm()
   -- Modern Professions UI (player's own)
@@ -279,7 +311,7 @@ QueueProfessionWidgetRefresh = function(addon, delay, clearRecipeID)
   if not addon then return end
   if addon.inCombat or InCombatLockdown() then return end
   if clearRecipeID then
-    currentRecipeID = nil
+    SetCurrentRecipeID(nil)
   end
   if addon._dslWidgetRefreshTimer then
     addon:CancelTimer(addon._dslWidgetRefreshTimer)
@@ -287,9 +319,7 @@ QueueProfessionWidgetRefresh = function(addon, delay, clearRecipeID)
   addon._dslWidgetRefreshTimer = addon:ScheduleTimer(function()
     addon._dslWidgetRefreshTimer = nil
     if addon.inCombat or InCombatLockdown() then return end
-    if ns._dslTryAttachTrackWidget then
-      ns._dslTryAttachTrackWidget()
-    end
+    SyncTrackWidgetAttach(addon)
     RefreshTrackWidget(addon)
   end, delay or 0.05)
 end
@@ -300,17 +330,8 @@ HookSchematicForm = function(sf, addon)
   sf._dslTrackHooksInstalled = true
 
   local function onRecipeChanged(self)
-    local rid = nil
-    if type(self.GetRecipeInfo) == "function" then
-      local ok, info = pcall(self.GetRecipeInfo, self)
-      if ok and type(info) == "table" and type(info.recipeID) == "number" and info.recipeID > 0 then
-        rid = info.recipeID
-      end
-    end
-    if not rid and type(self.recipeID) == "number" and self.recipeID > 0 then
-      rid = self.recipeID
-    end
-    currentRecipeID = rid
+    local rid = ResolveRecipeIDFromSchematicForm(self)
+    SetCurrentRecipeID(rid)
     QueueProfessionWidgetRefresh(addon, 0.01, not rid)
   end
 
@@ -323,23 +344,32 @@ HookSchematicForm = function(sf, addon)
   sf:HookScript("OnShow", function(self)
     onRecipeChanged(self)
   end)
+
+  local createBtn = sf.CreateButton
+      or (_G.ProfessionsFrame and _G.ProfessionsFrame.CraftingPage and _G.ProfessionsFrame.CraftingPage.CreateButton)
+      or (_G.TradeSkillFrame and _G.TradeSkillFrame.CreateButton)
+  if createBtn and not createBtn._dslCraftHookInstalled then
+    createBtn._dslCraftHookInstalled = true
+    createBtn:HookScript("OnClick", function()
+      local rid = ResolveRecipeIDFromSchematicForm(sf) or GetSelectedRecipeID()
+      if rid then
+        QueuePendingCraft(addon, rid, 1)
+      end
+    end)
+  end
 end
 
 local function GetSelectedRecipeID()
   local sf = GetActiveSchematicForm()
-  if sf and type(sf.GetRecipeInfo) == "function" then
-    local ok, info = pcall(sf.GetRecipeInfo, sf)
-    if ok and type(info) == "table" and type(info.recipeID) == "number" then
-      currentRecipeID = info.recipeID
-      return info.recipeID
-    end
+  local rid = ResolveRecipeIDFromSchematicForm(sf)
+  if rid then
+    return SetCurrentRecipeID(rid)
   end
 
   if C_TradeSkillUI and C_TradeSkillUI.GetSelectedRecipeID then
     local ok, rid = pcall(C_TradeSkillUI.GetSelectedRecipeID)
     if ok and type(rid) == "number" and rid > 0 then
-      currentRecipeID = rid
-      return rid
+      return SetCurrentRecipeID(rid)
     end
   end
   return currentRecipeID
@@ -522,8 +552,10 @@ function ns.TryCraftRecipe(addon, recipeID, attempt)
   OpenRecipeNow(recipeID)
 
   if C_TradeSkillUI and C_TradeSkillUI.CraftRecipe then
+    QueuePendingCraft(addon, recipeID, 1)
     local ok = pcall(C_TradeSkillUI.CraftRecipe, recipeID, 1)
     if ok then return true end
+    addon._dslPendingCraft = nil
   end
 
   if addon and addon.ScheduleTimer and attempt < 3 then
@@ -537,9 +569,7 @@ function ns.TryCraftRecipe(addon, recipeID, attempt)
   return false
 end
 
--- -------------------------
--- Track widget
--- -------------------------
+-- Track widget ----------------------------------------------------------------
 
 local function makeTrackWidget(parent, addon)
   local w = CreateFrame("Frame", nil, parent)

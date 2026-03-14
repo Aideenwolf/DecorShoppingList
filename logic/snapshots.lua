@@ -55,6 +55,251 @@ local function GetCharEntry(addon)
   return entry
 end
 
+local function GetSnapshotRuntimeState(addon)
+  addon._dslSnapshotState = addon._dslSnapshotState or {
+    chars = {},
+    realms = {},
+  }
+  return addon._dslSnapshotState
+end
+
+local function GetCharSnapshotState(addon)
+  local _, key = ns.Data.playerKey()
+  if not key then
+    return nil
+  end
+
+  local state = GetSnapshotRuntimeState(addon)
+  state.chars[key] = state.chars[key] or {
+    bags = {},
+    bank = {},
+  }
+  return state.chars[key]
+end
+
+local function GetRealmSnapshotState(addon)
+  local _, realm = GetRealmEntry(addon)
+  if not realm then
+    return nil
+  end
+
+  local state = GetSnapshotRuntimeState(addon)
+  state.realms[realm] = state.realms[realm] or {
+    warbank = {},
+  }
+  return state.realms[realm]
+end
+
+local function AdjustItemCount(dest, itemID, delta)
+  if not (type(dest) == "table" and type(itemID) == "number" and delta and delta ~= 0) then
+    return
+  end
+
+  local nextValue = (dest[itemID] or 0) + delta
+  if nextValue > 0 then
+    dest[itemID] = nextValue
+  else
+    dest[itemID] = nil
+  end
+end
+
+local function AdjustQualityCount(dest, itemID, quality, delta)
+  quality = ns.Data.NormalizeProfessionCraftingQuality(quality)
+  if not (type(dest) == "table" and type(itemID) == "number" and quality and delta and delta ~= 0) then
+    return
+  end
+
+  local byQuality = dest[itemID]
+  if not byQuality and delta > 0 then
+    byQuality = {}
+    dest[itemID] = byQuality
+  end
+  if not byQuality then
+    return
+  end
+
+  local nextValue = (byQuality[quality] or 0) + delta
+  if nextValue > 0 then
+    byQuality[quality] = nextValue
+  else
+    byQuality[quality] = nil
+  end
+
+  if not next(byQuality) then
+    dest[itemID] = nil
+  end
+end
+
+local function ApplySlotState(containerState, slotState, multiplier)
+  if not (containerState and slotState and slotState.itemID and slotState.count and slotState.count > 0) then
+    return
+  end
+
+  local delta = (multiplier or 1) * slotState.count
+  AdjustItemCount(containerState.counts, slotState.itemID, delta)
+  AdjustQualityCount(containerState.qualityCounts, slotState.itemID, slotState.quality, delta)
+end
+
+local function GetContainerState(containerStates, bagID)
+  containerStates[bagID] = containerStates[bagID] or {
+    slots = {},
+    counts = {},
+    qualityCounts = {},
+  }
+  return containerStates[bagID]
+end
+
+local function BuildContainerTotals(containerStates, bagIDs, includeQuality)
+  local counts = {}
+  local qualityCounts = includeQuality and {} or nil
+
+  for _, bagID in ipairs(bagIDs) do
+    local containerState = containerStates[bagID]
+    if containerState then
+      for itemID, count in pairs(containerState.counts or {}) do
+        AdjustItemCount(counts, itemID, count)
+      end
+      if includeQuality and type(containerState.qualityCounts) == "table" then
+        for itemID, byQuality in pairs(containerState.qualityCounts) do
+          for quality, count in pairs(byQuality) do
+            AdjustQualityCount(qualityCounts, itemID, quality, count)
+          end
+        end
+      end
+    end
+  end
+
+  return counts, qualityCounts
+end
+
+local function TablesEqual(a, b)
+  if a == b then
+    return true
+  end
+  if type(a) ~= "table" or type(b) ~= "table" then
+    return false
+  end
+
+  for k, v in pairs(a) do
+    local other = b[k]
+    if type(v) == "table" or type(other) == "table" then
+      if not TablesEqual(v, other) then
+        return false
+      end
+    elseif other ~= v then
+      return false
+    end
+  end
+
+  for k, v in pairs(b) do
+    local other = a[k]
+    if type(v) == "table" or type(other) == "table" then
+      if not TablesEqual(v, other) then
+        return false
+      end
+    elseif other ~= v then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function ReplaceIfChanged(dest, key, newValue)
+  if TablesEqual(dest[key] or {}, newValue or {}) then
+    return false
+  end
+
+  dest[key] = newValue or {}
+  return true
+end
+
+local function RefreshContainerTotals(dest, countsKey, qualityKey, containerStates, bagIDs, includeQuality)
+  local sawChanges = false
+  for _, bagID in ipairs(bagIDs) do
+    sawChanges = ScanContainer(containerStates, bagID, includeQuality) or sawChanges
+  end
+
+  if not sawChanges then
+    return false
+  end
+
+  local newCounts, newQualityCounts = BuildContainerTotals(containerStates, bagIDs, includeQuality)
+  local changed = ReplaceIfChanged(dest, countsKey, newCounts)
+
+  if includeQuality and qualityKey then
+    changed = ReplaceIfChanged(dest, qualityKey, newQualityCounts) or changed
+  end
+
+  return changed
+end
+
+local function ScanContainer(containerStates, bagID, includeQuality)
+  if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then
+    return false
+  end
+
+  local ok, slots = pcall(C_Container.GetContainerNumSlots, bagID)
+  if not ok or type(slots) ~= "number" or slots < 0 then
+    return false
+  end
+
+  local containerState = GetContainerState(containerStates, bagID)
+  local seen = {}
+  local changed = false
+
+  for slot = 1, slots do
+    seen[slot] = true
+    local info = C_Container.GetContainerItemInfo(bagID, slot)
+    local oldState = containerState.slots[slot]
+    local newItemID = info and info.itemID or nil
+    local newCount = info and info.stackCount or 0
+    local newLink = info and info.hyperlink or nil
+    local sameIdentity = oldState
+      and oldState.itemID == newItemID
+      and oldState.link == newLink
+    local sameState = sameIdentity
+      and oldState.count == newCount
+
+    if not sameState then
+      changed = true
+      if oldState then
+        ApplySlotState(containerState, oldState, -1)
+      end
+
+      if newItemID and newCount > 0 then
+        local quality = nil
+        if sameIdentity and oldState and oldState.quality then
+          quality = oldState.quality
+        elseif includeQuality then
+          quality = ns.Data.GetTrackedQualityFromContainerItem(bagID, slot, info)
+        end
+
+        local newState = {
+          itemID = newItemID,
+          count = newCount,
+          link = newLink,
+          quality = quality,
+        }
+        containerState.slots[slot] = newState
+        ApplySlotState(containerState, newState, 1)
+      else
+        containerState.slots[slot] = nil
+      end
+    end
+  end
+
+  for slot, oldState in pairs(containerState.slots) do
+    if not seen[slot] then
+      changed = true
+      ApplySlotState(containerState, oldState, -1)
+      containerState.slots[slot] = nil
+    end
+  end
+
+  return changed
+end
+
 function ns.Snapshots.GetProfessionForRecipe(recipeID)
   if not recipeID then
     return nil, nil
@@ -116,6 +361,19 @@ function ns.Snapshots.SnapshotRecipeToCache(addon, recipeID, force)
     yieldMin = schematic.quantityMin
   end
 
+  local outputItemID = nil
+  if ns.GetRecipeOutputItemID then
+    outputItemID = ns.GetRecipeOutputItemID(recipeID)
+  end
+  if not outputItemID and schematic then
+    outputItemID = schematic.outputItemID or schematic.productItemID
+  end
+
+  local professionName = nil
+  local professionID = nil
+  professionName, professionID = ns.Snapshots.GetProfessionForRecipe(recipeID)
+  professionName = ns.Data.NormalizeProfessionName(professionName)
+
   local reagents = {}
   local slots = schematic.reagentSlotSchematics
   if slots then
@@ -132,6 +390,10 @@ function ns.Snapshots.SnapshotRecipeToCache(addon, recipeID, force)
   if #reagents == 0 then return end
 
   cache[recipeID] = {
+    outputItemID = outputItemID,
+    profession = professionName,
+    professionID = professionID,
+    recipeName = schematic.name,
     yieldMin = yieldMin,
     reagents = reagents,
     ts = time(),
@@ -157,6 +419,52 @@ function ns.Snapshots.GetPlayerProfessionSet()
   addProf(cook)
 
   return set
+end
+
+local function SameBooleanSet(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then
+    return false
+  end
+
+  for k, v in pairs(a) do
+    if v == true and b[k] ~= true then
+      return false
+    end
+  end
+
+  for k, v in pairs(b) do
+    if v == true and a[k] ~= true then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function GetProfessionScanContext(addon)
+  if not addon then
+    return nil, nil
+  end
+
+  local entry = GetCharEntry(addon)
+  local currentProfs = ns.Snapshots.GetPlayerProfessionSet()
+  return entry, currentProfs
+end
+
+function ns.Snapshots.ShouldScanCurrentProfessionLearned(addon)
+  if not addon then return false end
+  local entry, currentProfs = GetProfessionScanContext(addon)
+  if not entry then return true end
+
+  if not SameBooleanSet(entry.profs or {}, currentProfs) then
+    return true
+  end
+
+  if not entry.lastRecipeScan or entry.lastRecipeScan <= 0 then
+    return true
+  end
+
+  return false
 end
 
 function ns.Snapshots.PlayerHasProfession(profName)
@@ -187,14 +495,18 @@ function ns.Snapshots.IsPlayerProfessionUIOpen()
   return (_G.ProfessionsFrame and _G.ProfessionsFrame:IsShown()) == true
 end
 
-function ns.Snapshots.ScanCurrentProfessionLearned(addon)
+function ns.Snapshots.ScanCurrentProfessionLearned(addon, force)
   if not addon then return false end
   if addon.inCombat or InCombatLockdown() then return false end
   if not ns.Snapshots.IsPlayerProfessionUIOpen() then return false end
   if not ns.Data.EnsureProfessionsLoaded() then return false end
   if not (C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs and C_TradeSkillUI.GetRecipeInfo) then return false end
 
-  local entry = GetCharEntry(addon)
+  local entry, currentProfs = GetProfessionScanContext(addon)
+  if not force and not ns.Snapshots.ShouldScanCurrentProfessionLearned(addon) then
+    return false
+  end
+
   local ids = C_TradeSkillUI.GetAllRecipeIDs()
   if type(ids) ~= "table" then return false end
 
@@ -209,50 +521,21 @@ function ns.Snapshots.ScanCurrentProfessionLearned(addon)
     end
   end
 
-  if changed then
-    entry.lastRecipeScan = time()
-  end
+  entry.profs = currentProfs
+  entry.lastRecipeScan = time()
   return changed
 end
 
 function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
-  if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return end
+  if not (addon and addon.db and addon.db.global and addon.db.global.realms) then return false end
   opts = type(opts) == "table" and opts or {}
   local includeQuality = (opts.skipQuality ~= true)
 
   local realmEntry = GetRealmEntry(addon)
   local entry = GetCharEntry(addon)
-  if not realmEntry or not entry then return end
+  if not realmEntry or not entry then return false end
   entry.lastSeen = time()
-
-  local function addCount(dest, itemID, count)
-    if not (dest and itemID and count and count > 0) then return end
-    dest[itemID] = (dest[itemID] or 0) + count
-  end
-
-  local function addQualityCount(dest, itemID, quality, count)
-    quality = ns.Data.NormalizeTrackedQuality(quality)
-    if not (dest and itemID and quality and count and count > 0) then return end
-    dest[itemID] = dest[itemID] or {}
-    dest[itemID][quality] = (dest[itemID][quality] or 0) + count
-  end
-
-  local function scanBag(bagID, dest, destByQuality)
-    if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then return false end
-    local ok, slots = pcall(C_Container.GetContainerNumSlots, bagID)
-    if not ok or type(slots) ~= "number" or slots <= 0 then return false end
-
-    for slot = 1, slots do
-      local info = C_Container.GetContainerItemInfo(bagID, slot)
-      if info and info.itemID and info.stackCount then
-        addCount(dest, info.itemID, info.stackCount)
-        if includeQuality then
-          addQualityCount(destByQuality, info.itemID, ns.Data.GetTrackedQualityFromContainerItem(bagID, slot, info), info.stackCount)
-        end
-      end
-    end
-    return true
-  end
+  local changed = false
 
   local function GetAccountBankTabBagIDs()
     local out = {}
@@ -269,15 +552,11 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
     return out
   end
 
-  local newBags, newBagsByQuality = {}, {}
-  local sawBags = false
-  for bag = 0, 4 do
-    sawBags = scanBag(bag, newBags, newBagsByQuality) or sawBags
-  end
-  sawBags = scanBag(5, newBags, newBagsByQuality) or sawBags
-  if sawBags then
-    entry.bags = newBags
-    entry.bagsByQuality = newBagsByQuality
+  local charState = GetCharSnapshotState(addon)
+  local realmState = GetRealmSnapshotState(addon)
+  local bagIDs = { 0, 1, 2, 3, 4, 5 }
+  if charState then
+    changed = RefreshContainerTotals(entry, "bags", "bagsByQuality", charState.bags, bagIDs, includeQuality) or changed
   end
 
   local bankOpen = false
@@ -288,16 +567,9 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
         or ((BankFrame and BankFrame:IsShown()) or (ReagentBankFrame and ReagentBankFrame:IsShown()))
   end
   if bankOpen then
-    local newBank, newBankByQuality = {}, {}
-    local sawBank = false
-    sawBank = scanBag(-1, newBank, newBankByQuality) or sawBank
-    for bag = 6, 12 do
-      sawBank = scanBag(bag, newBank, newBankByQuality) or sawBank
-    end
-    sawBank = scanBag(-3, newBank, newBankByQuality) or sawBank
-    if sawBank then
-      entry.bank = newBank
-      entry.bankByQuality = newBankByQuality
+    local bankIDs = { -1, 6, 7, 8, 9, 10, 11, 12, -3 }
+    if charState then
+      changed = RefreshContainerTotals(entry, "bank", "bankByQuality", charState.bank, bankIDs, includeQuality) or changed
     end
   end
 
@@ -309,22 +581,16 @@ function ns.Snapshots.SnapshotCurrentCharacter(addon, opts)
 
   if warbankOpen then
     local tabBagIDs = GetAccountBankTabBagIDs()
-    if #tabBagIDs > 0 then
-      local newWarbank, newWarbankByQuality = {}, {}
-      local sawWarbank = false
-      for _, bagID in ipairs(tabBagIDs) do
-        sawWarbank = scanBag(bagID, newWarbank, newWarbankByQuality) or sawWarbank
-      end
-      if sawWarbank then
-        realmEntry.warbank = newWarbank
-        realmEntry.warbankByQuality = newWarbankByQuality
-      end
+    if #tabBagIDs > 0 and realmState then
+      changed = RefreshContainerTotals(realmEntry, "warbank", "warbankByQuality", realmState.warbank, tabBagIDs, includeQuality) or changed
     end
   end
+
+  return changed
 end
 
-function ns.Snapshots.SnapshotLearnedRecipes(addon)
-  return ns.Snapshots.ScanCurrentProfessionLearned(addon)
+function ns.Snapshots.SnapshotLearnedRecipes(addon, force)
+  return ns.Snapshots.ScanCurrentProfessionLearned(addon, force)
 end
 
 function ns.Snapshots.IsRecipeLearned(addon, recipeID)
@@ -419,7 +685,7 @@ function ns.Snapshots.GetTrackedCharacters(addon)
   return out, realm
 end
 
-function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality, tierItemIDs)
+function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, tierItemIDs)
   if not (addon and addon.db and addon.db.global and addon.db.global.realms and itemID) then
     return {}, { [1] = 0, [2] = 0, [3] = 0, total = 0 }
   end
@@ -438,57 +704,11 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality, tier
     return {}, { [1] = 0, [2] = 0, [3] = 0, total = 0 }
   end
 
-  local useModernQuality = ns.Data.UsesModernReagentQuality and ns.Data.UsesModernReagentQuality(itemID)
-  local trackedItemIDs = {}
-  if type(tierItemIDs) == "table" and next(tierItemIDs) then
-    for quality = 1, 3 do
-      if type(tierItemIDs[quality]) == "number" then
-        trackedItemIDs[quality] = tierItemIDs[quality]
-      end
-    end
-  end
-
-  local function newCounts()
-    return { [1] = 0, [2] = 0, [3] = 0, total = 0 }
-  end
-
-  local function sumBucketCounts(entry, bucketName, bucket)
-    local counts = newCounts()
-    if type(bucket) ~= "table" then
-      return counts
-    end
-
-    if next(trackedItemIDs) then
-      for quality = 1, 3 do
-        local trackedItemID = trackedItemIDs[quality]
-        if trackedItemID then
-          local count = bucket[trackedItemID] or 0
-          counts[quality] = count
-          counts.total = counts.total + count
-        end
-      end
-      return counts
-    end
-
-    if not useModernQuality then
-      local count = bucket[itemID] or 0
-      counts.total = count
-      return counts
-    end
-
-    if ns.Data and ns.Data.SumQualityBucketByName then
-      ns.Data.SumQualityBucketByName(addon, entry and entry[bucketName], targetName, nil, counts)
-      counts.total = (counts[1] or 0) + (counts[2] or 0) + (counts[3] or 0)
-    end
-
-    return counts
-  end
-
   local rows = {}
   for charKey, entry in pairs(chars) do
     if type(entry) == "table" then
-      local bagCounts = sumBucketCounts(entry, "bagsByQuality", entry.bags)
-      local bankCounts = sumBucketCounts(entry, "bankByQuality", entry.bank)
+      local bagCounts = (ns.Data.GetReagentSourceCounts and ns.Data.GetReagentSourceCounts(addon, entry.bags, entry.bagsByQuality, itemID, tierItemIDs)) or { total = 0 }
+      local bankCounts = (ns.Data.GetReagentSourceCounts and ns.Data.GetReagentSourceCounts(addon, entry.bank, entry.bankByQuality, itemID, tierItemIDs)) or { total = 0 }
       local total = (bagCounts.total or 0) + (bankCounts.total or 0)
 
       if total > 0 then
@@ -518,7 +738,7 @@ function ns.Snapshots.GetTrackedItemBreakdown(addon, itemID, targetQuality, tier
     return tostring(a.charKey or "") < tostring(b.charKey or "")
   end)
 
-  local warbank = sumBucketCounts(realmData, "warbankByQuality", realmData.warbank)
+  local warbank = (ns.Data.GetReagentSourceCounts and ns.Data.GetReagentSourceCounts(addon, realmData.warbank, realmData.warbankByQuality, itemID, tierItemIDs)) or { total = 0 }
 
   return rows, warbank
 end

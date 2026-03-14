@@ -169,7 +169,7 @@ local function SyncQualityControls(w, recipeID, goal)
     w._dslDraftUseQuality = false
   end
 
-  w._dslDraftTargetQuality = ns.Data.NormalizeTrackedQuality(w._dslDraftTargetQuality) or 3
+  w._dslDraftTargetQuality = ns.Data.NormalizeProfessionCraftingQuality(w._dslDraftTargetQuality) or 3
   w._dslQualityEnabled = (not isDecor) and (w._dslDraftUseQuality == true)
 
   if w.QualityCheck then
@@ -586,7 +586,7 @@ local function makeTrackWidget(parent, addon)
     end)
     b:SetScript("OnEnter", function(self)
       GameTooltip:SetOwner(self, "ANCHOR_TOP")
-      GameTooltip:AddLine(ns.Data.GetTrackedQualityLabel(quality) or tostring(quality), 1, 1, 1)
+      GameTooltip:AddLine(ns.Data.GetProfessionCraftingQualityLabel(quality) or tostring(quality), 1, 1, 1)
       GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function()
@@ -609,7 +609,7 @@ local function makeTrackWidget(parent, addon)
 
   w.QualityCheck:SetScript("OnClick", function(self)
     w._dslDraftUseQuality = self:GetChecked() and true or false
-    if w._dslDraftUseQuality and not ns.Data.NormalizeTrackedQuality(w._dslDraftTargetQuality) then
+    if w._dslDraftUseQuality and not ns.Data.NormalizeProfessionCraftingQuality(w._dslDraftTargetQuality) then
       w._dslDraftTargetQuality = 3
     end
     w._dslQualityEnabled = w._dslDraftUseQuality == true
@@ -665,7 +665,7 @@ local function makeTrackWidget(parent, addon)
     local itemID = (goal and goal.itemID) or GetRecipeOutputItemID(rid)
     local isDecor = itemID and ns.Data.IsDecorItem(itemID) or false
     local qualityMode = (not isDecor and w._dslDraftUseQuality) and "specific" or "any"
-    local targetQuality = (qualityMode == "specific") and (ns.Data.NormalizeTrackedQuality(w._dslDraftTargetQuality) or 3) or nil
+    local targetQuality = (qualityMode == "specific") and (ns.Data.NormalizeProfessionCraftingQuality(w._dslDraftTargetQuality) or 3) or nil
     local prevMode, prevTarget = GetGoalQualityTracking(goal)
 
     if delta == 0 and prevMode == qualityMode and prevTarget == targetQuality then

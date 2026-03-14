@@ -45,59 +45,15 @@ local function ColorizeCharacterName(name, classToken)
   return name
 end
 
-local function FormatQualityBreakdown(counts, tierItemIDs)
-  counts = type(counts) == "table" and counts or {}
-  local bronze = counts[1] or 0
-  local silver = counts[2] or 0
-  local gold = counts[3] or 0
-  local total = counts.total or (bronze + silver + gold)
-  if bronze == 0 and silver == 0 and gold == 0 then
-    return tostring(total)
-  end
-
-  local function iconForQuality(quality)
-    local atlases = ns.Data.QUALITY_ATLAS_CANDIDATES and ns.Data.QUALITY_ATLAS_CANDIDATES[quality]
-    local atlas = atlases and atlases[1]
-    if atlas then
-      return string.format("|A:%s:14:14|a", atlas)
-    end
-    return tostring(quality)
-  end
-
-  local qualityMap = { 1, 2, 3 }
-  local tierCount = 0
-  if type(tierItemIDs) == "table" then
-    for idx = 1, 3 do
-      if type(tierItemIDs[idx]) == "number" then
-        tierCount = tierCount + 1
-      end
-    end
-  end
-  if tierCount == 2 and gold == 0 then
-    qualityMap = { 2, 3 }
-  end
-
-  local parts = {}
-  local values = { bronze, silver, gold }
-  for index, amount in ipairs(values) do
-    if amount > 0 then
-      local displayQuality = qualityMap[index] or index
-      parts[#parts + 1] = string.format("%s %d", iconForQuality(displayQuality), amount)
-    end
-  end
-
-  return string.format("%s    %d", table.concat(parts, " | "), total)
-end
-
 local function ApplyQualityIcon(texture, quality)
   if not texture then return false end
-  quality = ns.Data.NormalizeTrackedQuality(quality)
+  quality = ns.Data.NormalizeProfessionCraftingQuality(quality)
   if not quality then
     texture:Hide()
     return false
   end
 
-  for _, atlas in ipairs((ns.Data.QUALITY_ATLAS_CANDIDATES and ns.Data.QUALITY_ATLAS_CANDIDATES[quality]) or {}) do
+  for _, atlas in ipairs((ns.Data.PROFESSION_CRAFTING_QUALITY_ATLAS_CANDIDATES and ns.Data.PROFESSION_CRAFTING_QUALITY_ATLAS_CANDIDATES[quality]) or {}) do
     if texture.SetAtlas and texture:SetAtlas(atlas, true) then
       texture:Show()
       return true
@@ -562,7 +518,6 @@ function ns.InitListWindow(addon)
       -- Reagents: show item tooltip + counts (keep existing info)
       if view == "reagents" and self.data.itemID then
         local tooltipItemID = (self.data.tooltipItemID)
-          or (ns.Data.SelectTooltipItemID and ns.Data.SelectTooltipItemID(addon, self.data.itemID, self.data.targetQuality))
           or self.data.itemID
         GameTooltip:SetItemByID(tooltipItemID)
         GameTooltip:AddLine(" ")
@@ -571,7 +526,7 @@ function ns.InitListWindow(addon)
         GameTooltip:AddDoubleLine(L["REMAINING"], tostring(self.data.remaining or 0), 1, 1, 1, 1, 1, 1)
 
         if ns.GetTrackedItemBreakdown then
-          local owners, warbank = ns.GetTrackedItemBreakdown(addon, self.data.baseItemID or self.data.itemID, nil, self.data.tierItemIDs)
+          local owners, warbank = ns.GetTrackedItemBreakdown(addon, self.data.baseItemID or self.data.itemID, self.data.tierItemIDs)
           if (#owners > 0) or (type(warbank) == "table" and (warbank.total or 0) > 0) then
             GameTooltip:AddLine(" ")
             GameTooltip:AddLine(L["OWNERSHIP_BREAKDOWN"] or "Ownership Breakdown", 1, 0.82, 0)
@@ -579,14 +534,16 @@ function ns.InitListWindow(addon)
             if type(warbank) == "table" and (warbank.total or 0) > 0 then
               GameTooltip:AddDoubleLine(
                 L["WARBANK"] or "Warbank",
-                FormatQualityBreakdown(warbank, self.data.tierItemIDs),
+                (ns.Data.FormatReagentQualityBreakdown and ns.Data.FormatReagentQualityBreakdown(warbank, self.data.tierItemIDs)) or tostring((warbank and warbank.total) or 0),
                 1, 1, 1, 0.9, 0.9, 0.9
               )
             end
 
             for _, info in ipairs(owners) do
               local label = ColorizeCharacterName(info.charName or info.charKey or "?", info.classToken)
-              GameTooltip:AddDoubleLine(label, FormatQualityBreakdown(info.counts, self.data.tierItemIDs), 1, 1, 1, 0.9, 0.9, 0.9)
+              local value = (ns.Data.FormatReagentQualityBreakdown and ns.Data.FormatReagentQualityBreakdown(info.counts, self.data.tierItemIDs))
+                or tostring((info.counts and info.counts.total) or 0)
+              GameTooltip:AddDoubleLine(label, value, 1, 1, 1, 0.9, 0.9, 0.9)
             end
           end
         end
@@ -610,7 +567,7 @@ function ns.InitListWindow(addon)
             GameTooltip:AddLine(" ")
 
             if qualityMode == "specific" and targetQuality then
-              local qualityLabel = ns.Data.GetTrackedQualityLabel(targetQuality) or tostring(targetQuality)
+              local qualityLabel = ns.Data.GetProfessionCraftingQualityLabel(targetQuality) or tostring(targetQuality)
               GameTooltip:AddDoubleLine(
                 L["QUALITY"] or "Quality",
                 string.format("%s (%d)", qualityLabel, have or 0),
@@ -621,9 +578,9 @@ function ns.InitListWindow(addon)
                 L["QUALITY"] or "Quality",
                 string.format(
                   "%s (%d) | %s (%d) | %s (%d)",
-                  ns.Data.GetTrackedQualityLabel(1) or "Bronze", breakdown[1] or 0,
-                  ns.Data.GetTrackedQualityLabel(2) or "Silver", breakdown[2] or 0,
-                  ns.Data.GetTrackedQualityLabel(3) or "Gold", breakdown[3] or 0
+                  ns.Data.GetProfessionCraftingQualityLabel(1) or "Bronze", breakdown[1] or 0,
+                  ns.Data.GetProfessionCraftingQualityLabel(2) or "Silver", breakdown[2] or 0,
+                  ns.Data.GetProfessionCraftingQualityLabel(3) or "Gold", breakdown[3] or 0
                 ),
                 1, 1, 1, 0.9, 0.9, 0.9
               )
@@ -763,8 +720,6 @@ function ns.InitListWindow(addon)
       ns.RefreshListWindow(addon)
     end)
   end)
-
-  ns.RefreshListWindow(addon)
 end
 
 function ns.ShowListWindow(addon, show)
@@ -772,12 +727,30 @@ function ns.ShowListWindow(addon, show)
   if not f then return end
 
   if show then
-    if ns.SnapshotCurrentCharacter then
-      ns.SnapshotCurrentCharacter(addon)
-    end
+    local view = addon and addon.db and addon.db.profile and addon.db.profile.window and addon.db.profile.window.view or "recipes"
+    local hasRecipes = addon and addon.cache and addon.cache.recipesDisplay and #addon.cache.recipesDisplay > 0
+    local hasReagents = addon and addon.cache and addon.cache.reagentsDisplay and #addon.cache.reagentsDisplay > 0
+    local hasRenderableCache = (view == "recipes" and hasRecipes) or (view == "reagents" and hasReagents)
+
     ns.ApplyWindowStateFromDB(addon)
     f:Show()
-    addon:MarkDirty("inventory")
+
+    if hasRenderableCache then
+      ns.RefreshListWindow(addon)
+      addon:MarkDirty("display")
+      if addon._dslPendingInventorySnapshot and ns.QueueInventorySnapshot then
+        addon._dslPendingInventorySnapshot = nil
+        ns.QueueInventorySnapshot(addon, 0.35)
+      elseif not ns.QueueInventorySnapshot then
+        addon:MarkDirty("inventory")
+      end
+    else
+      addon:MarkDirty("full")
+      if addon._dslPendingInventorySnapshot and ns.QueueInventorySnapshot then
+        addon._dslPendingInventorySnapshot = nil
+        ns.QueueInventorySnapshot(addon, 0.5)
+      end
+    end
   else
     f:Hide()
   end
@@ -935,7 +908,7 @@ local function RenderDataRow(row, entry, view, addon)
     row.Val:SetTextColor(0.5, 0.5, 0.5, 1)
   else
     local nr, ng, nb = 1, 1, 1
-    if view == "recipes" and type(entry.rarity) == "number" and entry.rarity >= 0 and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[entry.rarity] then
+    if type(entry.rarity) == "number" and entry.rarity >= 0 and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[entry.rarity] then
       local qc = ITEM_QUALITY_COLORS[entry.rarity]
       nr, ng, nb = qc.r or 1, qc.g or 1, qc.b or 1
     end

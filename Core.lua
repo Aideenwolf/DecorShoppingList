@@ -115,32 +115,81 @@ local function ResetCountData(addon)
   end
 
   addon.lastHave = {}
-  addon._dslLastSnapshot = nil
   addon.cache = nil
   addon:Print(L["RESET_COUNTS"])
   addon:MarkDirty("full")
 end
 
-local function SnapshotNow(addon, opts)
-  ns.SnapshotCurrentCharacter(addon, opts)
-  addon._dslLastSnapshot = GetTime()
-end
-
-local function SnapshotIfStale(addon, seconds, opts)
-  local threshold = seconds or 0.15
-  if not addon._dslLastSnapshot or (GetTime() - addon._dslLastSnapshot) > threshold then
-    SnapshotNow(addon, opts)
-  end
-end
-
 local function HandleInventorySnapshotEvent(addon, opts)
   if addon.inCombat then
     addon.dirty = true
-    return
+    return false
   end
 
-  SnapshotNow(addon, opts)
-  addon:MarkDirty("inventory")
+  if ns.SnapshotCurrentCharacter(addon, opts) then
+    addon:MarkDirty("inventory")
+    return true
+  end
+
+  return false
+end
+
+local function MergeSnapshotOpts(existing, incoming)
+  if type(existing) ~= "table" then
+    existing = nil
+  end
+  if type(incoming) ~= "table" then
+    incoming = nil
+  end
+
+  local merged = {}
+
+  if (existing and existing.forceBank) or (incoming and incoming.forceBank) then
+    merged.forceBank = true
+  end
+  if (existing and existing.forceWarbank) or (incoming and incoming.forceWarbank) then
+    merged.forceWarbank = true
+  end
+
+  if (existing and existing.skipQuality == false) or (incoming and incoming.skipQuality == false) then
+    merged.skipQuality = false
+  elseif (existing and existing.skipQuality == true) or (incoming and incoming.skipQuality == true) then
+    merged.skipQuality = true
+  end
+
+  return next(merged) and merged or nil
+end
+
+local function QueueSnapshotRequest(addon, key, delay, opts)
+  if not addon then return end
+
+  addon._dslSnapshotRequests = addon._dslSnapshotRequests or {}
+  local request = addon._dslSnapshotRequests[key] or {}
+  addon._dslSnapshotRequests[key] = request
+
+  request.opts = MergeSnapshotOpts(request.opts, opts)
+
+  if request.timer then
+    addon:CancelTimer(request.timer)
+  end
+
+  request.timer = addon:ScheduleTimer(function()
+    local current = addon._dslSnapshotRequests and addon._dslSnapshotRequests[key]
+    if current then
+      current.timer = nil
+    end
+
+    if addon.inCombat then
+      addon.dirty = true
+      return
+    end
+
+    HandleInventorySnapshotEvent(addon, current and current.opts or opts)
+
+    if current then
+      current.opts = nil
+    end
+  end, delay or 0.25)
 end
 
 local function HasTrackedQualityGoals(addon)
@@ -156,7 +205,7 @@ local function HasTrackedQualityGoals(addon)
   return false
 end
 
-local function ShouldDoExpensiveInventoryWork()
+local function IsInventoryRelevantUIOpen()
   if ns.ListWindow and ns.ListWindow.IsShown and ns.ListWindow:IsShown() then
     return true
   end
@@ -164,51 +213,54 @@ local function ShouldDoExpensiveInventoryWork()
       or (_G.TradeSkillFrame and _G.TradeSkillFrame:IsShown()) then
     return true
   end
-  if (_G.ContainerFrameCombinedBags and _G.ContainerFrameCombinedBags:IsShown())
-      or (_G.ContainerFrame1 and _G.ContainerFrame1:IsShown())
-      or (_G.BagItemSearchBox and _G.BagItemSearchBox:IsShown()) then
-    return true
-  end
   return false
+end
+
+local function ShouldDoExpensiveInventoryWork()
+  return IsInventoryRelevantUIOpen()
 end
 
 local function QueueInventorySnapshot(addon, delay)
   if not addon then return end
-  if addon._dslInventoryRetryTimer then
-    addon:CancelTimer(addon._dslInventoryRetryTimer)
-  end
-  addon._dslInventoryRetryTimer = addon:ScheduleTimer(function()
-    addon._dslInventoryRetryTimer = nil
-    if addon.inCombat then
-      addon.dirty = true
-      return
-    end
-    if not ShouldDoExpensiveInventoryWork() then
-      addon.dirtyFlags = addon.dirtyFlags or NewDirtyFlags()
-      addon.dirtyFlags.inventory = true
-      return
-    end
-    SnapshotNow(addon, { skipQuality = true })
-    addon:MarkDirty("inventory")
+  local includeQuality = HasTrackedQualityGoals(addon) and ShouldDoExpensiveInventoryWork()
+  QueueSnapshotRequest(addon, "inventory", delay or 0.25, {
+    skipQuality = not includeQuality,
+  })
+end
 
-    if HasTrackedQualityGoals(addon) then
-      if addon._dslQualityInventoryRetryTimer then
-        addon:CancelTimer(addon._dslQualityInventoryRetryTimer)
-      end
-      addon._dslQualityInventoryRetryTimer = addon:ScheduleTimer(function()
-        addon._dslQualityInventoryRetryTimer = nil
-        if addon.inCombat then
-          addon.dirty = true
-          return
-        end
-        if not ShouldDoExpensiveInventoryWork() then
-          return
-        end
-        SnapshotNow(addon)
-        addon:MarkDirty("inventory")
-      end, 1.0)
-    end
-  end, delay or 0.25)
+ns.QueueInventorySnapshot = QueueInventorySnapshot
+
+local function TableHasEntries(t)
+  return type(t) == "table" and next(t) ~= nil
+end
+
+local function ShouldScheduleStartupInventorySnapshot(addon)
+  if not (addon and addon.db and addon.db.global and ns.Data and ns.Data.playerKey) then
+    return true
+  end
+
+  local realm, charKey = ns.Data.playerKey()
+  if not realm or not charKey then
+    return true
+  end
+
+  local realms = addon.db.global.realms
+  local realmEntry = type(realms) == "table" and realms[realm] or nil
+  local chars = realmEntry and realmEntry.chars
+  local entry = type(chars) == "table" and chars[charKey] or nil
+  if type(entry) ~= "table" then
+    return true
+  end
+
+  if TableHasEntries(entry.bags) or TableHasEntries(entry.bank) then
+    return false
+  end
+
+  if TableHasEntries(entry.bagsByQuality) or TableHasEntries(entry.bankByQuality) then
+    return false
+  end
+
+  return true
 end
 
 local function GetBankSnapshotOpts(addon)
@@ -224,22 +276,39 @@ end
 
 local function FlushBankSnapshot(addon)
   if not addon then return end
-  if addon._dslBankSnapshotTimer then
-    addon:CancelTimer(addon._dslBankSnapshotTimer)
-    addon._dslBankSnapshotTimer = nil
+  addon._dslSnapshotRequests = addon._dslSnapshotRequests or {}
+  local request = addon._dslSnapshotRequests.bank
+  if request and request.timer then
+    addon:CancelTimer(request.timer)
+    request.timer = nil
   end
   HandleInventorySnapshotEvent(addon, GetBankSnapshotOpts(addon))
 end
 
 local function QueueBankSnapshot(addon, delay)
   if not addon then return end
-  if addon._dslBankSnapshotTimer then
-    addon:CancelTimer(addon._dslBankSnapshotTimer)
+  local opts = GetBankSnapshotOpts(addon) or {}
+  opts.skipQuality = not (HasTrackedQualityGoals(addon) and ShouldDoExpensiveInventoryWork())
+
+  addon._dslSnapshotRequests = addon._dslSnapshotRequests or {}
+  local request = addon._dslSnapshotRequests.bank or {}
+  addon._dslSnapshotRequests.bank = request
+  request.opts = MergeSnapshotOpts(request.opts, opts)
+
+  if request.timer then
+    addon:CancelTimer(request.timer)
   end
-  addon._dslBankSnapshotTimer = addon:ScheduleTimer(function()
-    addon._dslBankSnapshotTimer = nil
+
+  request.timer = addon:ScheduleTimer(function()
+    local current = addon._dslSnapshotRequests and addon._dslSnapshotRequests.bank
+    if current then
+      current.timer = nil
+    end
     if addon._dslBankInteractionOpen then
-      HandleInventorySnapshotEvent(addon, GetBankSnapshotOpts(addon))
+      HandleInventorySnapshotEvent(addon, current and current.opts or opts)
+    end
+    if current then
+      current.opts = nil
     end
   end, delay or 0.75)
 end
@@ -276,8 +345,6 @@ function DSL:OnInitialize()
   if ns.InitPlugins then
     ns.InitPlugins(self)
   end
-
-  self:MarkDirty("full")
 end
 
 function DSL:OnEnable()
@@ -295,16 +362,20 @@ function DSL:OnEnable()
   self:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "OnInteractionFrameHide")
 
   self:ScheduleTimer(function()
-    if self.inCombat then return end
-    SnapshotNow(self)
-    self:MarkDirty("inventory")
-  end, 1.0)
+    if self.inCombat then
+      self.dirtyFlags = self.dirtyFlags or NewDirtyFlags()
+      self.dirtyFlags.full = true
+      return
+    end
+    self:MarkDirty("full")
+  end, 1.5)
 
-  self:ScheduleTimer(function()
-    if self.inCombat then return end
-    SnapshotNow(self)
-    self:MarkDirty("inventory")
-  end, 3.0)
+  if ShouldScheduleStartupInventorySnapshot(self) then
+    self:ScheduleTimer(function()
+      if self.inCombat then return end
+      QueueInventorySnapshot(self, 0.05)
+    end, 3.0)
+  end
 end
 
 function DSL:PLAYER_REGEN_DISABLED()
@@ -329,7 +400,7 @@ function DSL:PLAYER_REGEN_ENABLED()
 end
 
 function DSL:OnBankClosed()
-  if self._dslBankSnapshotTimer then
+  if self._dslSnapshotRequests and self._dslSnapshotRequests.bank and self._dslSnapshotRequests.bank.timer then
     FlushBankSnapshot(self)
   end
   self._dslBankInteractionOpen = nil
@@ -347,6 +418,12 @@ function DSL:OnInventoryChanged()
     QueueBankSnapshot(self, 0.75)
     return
   end
+
+  if not IsInventoryRelevantUIOpen() then
+    self._dslPendingInventorySnapshot = true
+    return
+  end
+
   QueueInventorySnapshot(self, 0.25)
 end
 
@@ -377,7 +454,12 @@ function DSL:OnPlayerLogout()
   end
 end
 
-function DSL:OnTradeSkillListUpdate()
+function DSL:OnTradeSkillListUpdate(event)
+  if self._dslPendingInventorySnapshot then
+    self._dslPendingInventorySnapshot = nil
+    QueueInventorySnapshot(self, 0.05)
+  end
+
   if self.inCombat then
     self.dirtyFlags = self.dirtyFlags or NewDirtyFlags()
     self.dirtyFlags.full = true
@@ -390,7 +472,8 @@ function DSL:OnTradeSkillListUpdate()
 
   self._dslProfessionRefreshTimer = self:ScheduleTimer(function()
     self._dslProfessionRefreshTimer = nil
-    if ns.SnapshotLearnedRecipes and ns.SnapshotLearnedRecipes(self) then
+    local forceRecipeScan = (event == "NEW_RECIPE_LEARNED")
+    if ns.SnapshotLearnedRecipes and ns.SnapshotLearnedRecipes(self, forceRecipeScan) then
       self:MarkDirty("full")
       return
     end
@@ -428,8 +511,6 @@ function DSL:RecomputeAndRefresh()
 
   if flags.full then
     -- Full rebuild (goals/learned/display changes)
-    SnapshotIfStale(self, 0.15)
-
     ns.ApplyCompletionByInventoryDelta(self)
     ns.RecomputeCaches(self)
     ns.RefreshListWindow(self)
@@ -438,7 +519,6 @@ function DSL:RecomputeAndRefresh()
 
   if flags.inventory then
     -- Inventory-only refresh: keep recipe/reagent NEEDS, refresh HAVE/remaining/completion
-    SnapshotIfStale(self, 0.15)
     ns.ApplyCompletionByInventoryDelta(self)
 
     if ns.RecomputeReagentsOnly then

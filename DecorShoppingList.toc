@@ -15,14 +15,22 @@ plugins/Homebound.lua
 plugins/Example.lua
 plugins/Template.lua
 
-modules/sorting.lua
-modules/reagents.lua
-modules/recipes.lua
-modules/snapshots.lua
+data/professions.lua
+data/items.lua
+data/quality.lua
+data/reagents.lua
+data/counts.lua
 
-Data.lua
-Config.lua
-ListWindow.lua
-Professions.lua
+logic/sorting.lua
+logic/reagents.lua
+logic/recipes.lua
+logic/snapshots.lua
+
+data/init.lua
+
+ui/Config.lua
+ui/ListWindow.lua
+ui/Professions.lua
+ui/Broker.lua
+
 Core.lua
-Broker.lua
